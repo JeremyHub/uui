@@ -1,0 +1,14 @@
+[project]
+name = "uui"
+version = "0.1.0"
+description = "UUI: FastAPI backend that streams live-generated HTML from a local Ollama model"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "httpx",
+]
+
+[tool.uv]
+package = false

@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>UUI</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 16px; color: #222; }
+  #bootstrap { display: flex; gap: 8px; margin-bottom: 24px; }
+  #bootstrap input { flex: 1; padding: 8px; font-size: 14px; }
+  #bootstrap button { padding: 8px 16px; }
+  #app { border: 1px solid #ddd; border-radius: 8px; padding: 16px; min-height: 120px; }
+  #status { font-size: 12px; color: #888; margin: 8px 0; min-height: 16px; }
+  details { margin-top: 24px; font-size: 12px; }
+  #transcript { background: #f6f6f6; padding: 8px; max-height: 300px; overflow: auto; white-space: pre-wrap; }
+  #topbar { display: flex; justify-content: space-between; align-items: center; }
+  #topbar button { font-size: 12px; }
+</style>
+</head>
+<body>
+
+<div id="topbar">
+  <h3>UUI</h3>
+  <button id="reset-btn">reset</button>
+</div>
+
+<div id="bootstrap">
+  <input id="concept" placeholder="What should this app be? e.g. 'a number guessing game'">
+  <button id="start-btn">Start</button>
+</div>
+
+<div id="status"></div>
+<div id="app"></div>
+
+<details>
+  <summary>transcript (debug)</summary>
+  <div id="transcript"></div>
+</details>
+
+<script>
+  const messages = [];               // running transcript, in-memory only
+  const appEl = document.getElementById("app");
+  const statusEl = document.getElementById("status");
+  const transcriptEl = document.getElementById("transcript");
+  const bootstrapEl = document.getElementById("bootstrap");
+
+  function renderTranscript() {
+    transcriptEl.textContent = JSON.stringify(messages, null, 2);
+  }
+
+  async function sendTurn(userContent) {
+    messages.push({ role: "user", content: userContent });
+    renderTranscript();
+    statusEl.textContent = "generating...";
+
+    const res = await fetch("/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messages }),
+    });
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let acc = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      acc += decoder.decode(value, { stream: true });
+      statusEl.textContent = `generating... (${acc.length} chars)`;
+    }
+
+    // Swap the DOM only once the fragment is complete -- partial HTML mid-tag
+    // isn't valid to inject incrementally.
+    appEl.innerHTML = acc;               // NOTE: intentionally unsanitized, by design
+    messages.push({ role: "assistant", content: acc });
+    renderTranscript();
+    statusEl.textContent = "";
+  }
+
+  document.getElementById("start-btn").addEventListener("click", () => {
+    const concept = document.getElementById("concept").value.trim() || "a simple demo app";
+    bootstrapEl.style.display = "none";
+    sendTurn(JSON.stringify({ event: "start", concept }));
+  });
+
+  document.getElementById("reset-btn").addEventListener("click", () => location.reload());
+
+  // Event delegation: any element with data-action inside #app drives the next turn.
+  appEl.addEventListener("click", (e) => {
+    const el = e.target.closest("[data-action]");
+    if (!el || !appEl.contains(el)) return;
+    e.preventDefault();
+
+    const action = el.dataset.action;
+    const elementData = {};
+    for (const [k, v] of Object.entries(el.dataset)) {
+      if (k !== "action") elementData[k] = v;
+    }
+
+    const formValues = {};
+    appEl.querySelectorAll("[name]").forEach((field) => {
+      formValues[field.name] = field.value;
+    });
+
+    sendTurn(JSON.stringify({ event: "click", action, elementData, formValues }));
+  });
+</script>
+
+</body>
+</html>
