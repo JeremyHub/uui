@@ -11,7 +11,7 @@ from pydantic import BaseModel
 FENCE_RE = re.compile(r"^\s*```[a-zA-Z0-9]*\n?|\n?```\s*$")
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
-MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:3b")
+MODEL = os.environ.get("OLLAMA_MODEL", "gemma3:4b")
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
 SYSTEM_PROMPT = """You render a single-page app live, as ONE HTML FRAGMENT (never a full document), inside a div with id="app" that fills the viewport.
