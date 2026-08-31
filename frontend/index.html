@@ -35,7 +35,7 @@
 </div>
 
 <div id="status"></div>
-<iframe id="app"></iframe>
+<iframe id="app" sandbox="allow-scripts allow-same-origin allow-forms"></iframe>
 
 <details>
   <summary>transcript (debug)</summary>
@@ -187,11 +187,7 @@
   // intercepted rather than constrained -- the model can write authentic-looking hrefs
   // freely; clicking one never actually navigates, it just asks the model to generate
   // whatever should come next.
-  // The iframe gets a whole new document every time we set srcdoc, so listeners are
-  // re-attached on each "load" rather than once at startup.
-  appEl.addEventListener("load", () => {
-    const doc = appEl.contentDocument;
-
+  function attachDelegation(doc) {
     // Capture phase + stopImmediatePropagation: generated documents sometimes attach their
     // own listeners directly on the clicked element (e.g. real webpages tend to wire up
     // window.location-driven "navigation" despite being told not to) -- those run before a
@@ -234,7 +230,22 @@
       },
       true
     );
-  });
+  }
+
+  // The iframe gets a whole new document every time we set srcdoc, so delegation has to be
+  // re-attached each time -- but waiting for the iframe's "load" event isn't good enough: it
+  // only fires once every resource (including the real external images the model is told to
+  // link) has finished loading, while the DOM is clickable much sooner. That leaves a window
+  // where a click can reach the browser's native, unintercepted handling -- e.g. a real link
+  // actually navigating away. Poll readyState instead so delegation attaches the moment the
+  // new document exists and is parsed, not once its images happen to finish.
+  let attachedDoc = null;
+  setInterval(() => {
+    const doc = appEl.contentDocument;
+    if (!doc || doc === attachedDoc || doc.readyState === "loading") return;
+    attachedDoc = doc;
+    attachDelegation(doc);
+  }, 20);
 </script>
 
 </body>
