@@ -44,6 +44,7 @@ PLAN_SYSTEM_PROMPT = """Given:
 - USER INTENT: a plain-text statement of what the user was trying to do with their last action.
 
 Decide what screen should result from the user's intent actually being satisfied.
+NO LOADING SCREENS OR PLACEHOLDERS, REAL CONTENT ONLY.
 
 Write a plain-text plan covering:
 - What this screen/state is.
@@ -63,6 +64,7 @@ Reply with ONLY the raw HTML document:
 - Use real <img> tags: link real URLs you believe exist for logos/photos.
 - <script> runs normally in the document -- DOMContentLoaded/window.onload fire for real, so it's
   fine to use them.
+- DO NOT include ANY PLACEHOLDER TEXT. Be creative with text. No loading screens or placeholders.
 """
 
 SUMMARY_SYSTEM_PROMPT = """Write a concise plain-text summary (no HTML, no code fences) covering:
