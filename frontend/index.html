@@ -66,10 +66,13 @@
     });
   }
 
+  // Backend runs two phases per turn: "plan" (a text description of what should
+  // happen next) then "html" (the fragment that implements it). Both stream as
+  // NDJSON lines so status/transcript can reflect progress through each phase.
   async function sendTurn(event) {
     actions.push(event);
     renderTranscript();
-    statusEl.textContent = "generating...";
+    statusEl.textContent = "planning...";
 
     const res = await fetch("/generate", {
       method: "POST",
@@ -79,18 +82,41 @@
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
-    let acc = "";
+    let buf = "";
+    let finalHtml = null;
+
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      acc += decoder.decode(value, { stream: true });
-      statusEl.textContent = `generating... (${acc.length} chars)`;
+      buf += decoder.decode(value, { stream: true });
+
+      let nl;
+      while ((nl = buf.indexOf("\n")) !== -1) {
+        const line = buf.slice(0, nl);
+        buf = buf.slice(nl + 1);
+        if (!line) continue;
+        const msg = JSON.parse(line);
+
+        if (msg.phase === "plan" && !msg.done) {
+          statusEl.textContent = `planning... (${msg.chars} chars)`;
+        } else if (msg.phase === "plan" && msg.done) {
+          event.plan = msg.text;           // recorded on the timeline entry for the transcript
+          renderTranscript();
+          statusEl.textContent = "generating...";
+        } else if (msg.phase === "html" && !msg.done) {
+          statusEl.textContent = `generating... (${msg.chars} chars)`;
+        } else if (msg.phase === "html" && msg.done) {
+          finalHtml = msg.text;
+        } else if (msg.phase === "error") {
+          finalHtml = `<pre style="color:red; white-space:pre-wrap;">${msg.message}</pre>`;
+        }
+      }
     }
 
     // Swap the DOM only once the fragment is complete -- partial HTML mid-tag
     // isn't valid to inject incrementally.
-    currentHtml = acc;
-    appEl.innerHTML = acc;               // NOTE: intentionally unsanitized, by design
+    currentHtml = finalHtml || "";
+    appEl.innerHTML = currentHtml;        // NOTE: intentionally unsanitized, by design
     executeScripts(appEl);
     // Generated scripts sometimes wait for DOMContentLoaded/load out of habit, even though
     // those already fired -- re-dispatch synthetic copies so such listeners still run.
