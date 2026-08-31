@@ -75,35 +75,35 @@ Write a plain-text plan (no HTML, no code fences) covering:
 Output ONLY the plan. No HTML, no commentary about this task itself.
 """
 
-GENERATE_SYSTEM_PROMPT = """You render a single-page app live, as ONE HTML FRAGMENT (never a full document), inside a div with id="app" that fills the viewport.
+GENERATE_SYSTEM_PROMPT = """You render a single-page app live, as ONE COMPLETE HTML DOCUMENT, loaded
+into an <iframe> that fills the viewport.
 
 You are the generation phase of a four-phase pipeline: an earlier phase already decided what
 should appear next and wrote it up as the PLAN below. Implement that plan faithfully -- don't
 invent different content or second-guess its decisions, just turn it into good HTML/CSS/JS.
 
-Reply with ONLY the raw HTML fragment to replace #app's contents:
-- Fragment only -- no <!DOCTYPE>, <html>, <head>, <title>, <meta>, <body>. No code fences,
-  no commentary.
+Reply with ONLY the raw HTML document to load into the iframe:
+- Full document -- start with <!DOCTYPE html> and include <html>, <head> (with <title> and any
+  <meta>/<style> you need), and <body>. No code fences, no commentary.
 - data-action="..." on anything (besides plain links) that should trigger the next step, matching
   what the plan calls for.
 - name="..." on any input/select/textarea whose value matters later.
-- Design full-height/full-width -- #app fills the whole viewport.
-- Make it look genuinely good: real inline CSS -- typography, color, spacing, flexbox/grid,
-  transitions.
+- Design full-height/full-width -- the document fills the whole viewport (e.g. html, body { height:
+  100%; margin: 0; }).
+- Make it look genuinely good: real CSS -- typography, color, spacing, flexbox/grid, transitions.
 - Use real <img> tags: link real URLs you believe exist for logos/photos, or
   <img src="https://picsum.photos/<w>/<h>?random=<n>"> for generic filler.
 - Never fetch()/XHR a real external API -- no backend exists for that. Write all data
   directly into the HTML/JS yourself.
-- Inline <script> executes (re-inserted after every update). It runs after the page already
-  loaded, so never wrap it in DOMContentLoaded/window.onload -- write top-level code. Don't
-  use window.location/window.open.
+- <script> runs normally in the document -- DOMContentLoaded/window.onload fire for real, so it's
+  fine to use them. Don't use window.location/window.open.
 """
 
 SUMMARY_SYSTEM_PROMPT = """You are the summary phase of a four-phase live UI generator. You just
-receive an HTML fragment (the entire contents of a div with id="app") and describe it in plain text
-for the NEXT turn's intent and planning phases, which will decide what happens after the user's
-next interaction -- they will NOT see this HTML, only your summary. You write NO HTML, CSS, or JS
-yourself.
+receive a full HTML document (the one currently loaded into the app's iframe) and describe it in
+plain text for the NEXT turn's intent and planning phases, which will decide what happens after the
+user's next interaction -- they will NOT see this HTML, only your summary. You write NO HTML, CSS,
+or JS yourself.
 
 Write a concise plain-text summary (no HTML, no code fences) covering:
 - What screen/state this is and its purpose.

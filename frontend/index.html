@@ -17,7 +17,7 @@
   #bootstrap input { flex: 1; padding: 8px; font-size: 14px; }
   #bootstrap button { padding: 8px 16px; }
   #status { font-size: 12px; color: #888; min-height: 16px; padding-top: 0; padding-bottom: 0; }
-  #app { flex: 1 1 auto; min-height: 0; overflow: auto; border-top: 1px solid #ddd; }
+  #app { flex: 1 1 auto; min-height: 0; display: block; width: 100%; border: 0; border-top: 1px solid #ddd; }
   details { flex: 0 0 auto; font-size: 12px; padding: 4px 16px; }
   #transcript { background: #f6f6f6; padding: 8px; max-height: 200px; overflow: auto; white-space: pre-wrap; }
 </style>
@@ -35,7 +35,7 @@
 </div>
 
 <div id="status"></div>
-<div id="app"></div>
+<iframe id="app"></iframe>
 
 <details>
   <summary>transcript (debug)</summary>
@@ -53,18 +53,6 @@
 
   function renderTranscript() {
     transcriptEl.textContent = JSON.stringify({ currentHtml, lastSummary, actions }, null, 2);
-  }
-
-  // <script> tags set via innerHTML are inert -- recreate them so they actually run.
-  function executeScripts(container) {
-    container.querySelectorAll("script").forEach((oldScript) => {
-      const newScript = document.createElement("script");
-      for (const attr of oldScript.attributes) {
-        newScript.setAttribute(attr.name, attr.value);
-      }
-      newScript.textContent = oldScript.textContent;
-      oldScript.replaceWith(newScript);
-    });
   }
 
   // Backend runs four phases per turn: "intent" (given the last summary, the raw current
@@ -116,15 +104,10 @@
         } else if (msg.phase === "html" && !msg.done) {
           statusEl.textContent = `generating... (${msg.chars} chars)`;
         } else if (msg.phase === "html" && msg.done) {
-          // Swap the DOM as soon as the fragment is complete -- don't make the user
+          // Swap the iframe as soon as the document is complete -- don't make the user
           // wait through the summary phase too before seeing the new screen.
           currentHtml = msg.text;
-          appEl.innerHTML = currentHtml;   // NOTE: intentionally unsanitized, by design
-          executeScripts(appEl);
-          // Generated scripts sometimes wait for DOMContentLoaded/load out of habit, even
-          // though those already fired -- re-dispatch synthetic copies so listeners still run.
-          document.dispatchEvent(new Event("DOMContentLoaded"));
-          window.dispatchEvent(new Event("load"));
+          appEl.srcdoc = currentHtml;   // NOTE: intentionally unsanitized, by design
           renderTranscript();
           statusEl.textContent = "summarizing...";
         } else if (msg.phase === "summary" && !msg.done) {
@@ -135,8 +118,8 @@
           renderTranscript();
           statusEl.textContent = "";
         } else if (msg.phase === "error") {
-          currentHtml = `<pre style="color:red; white-space:pre-wrap;">${msg.message}</pre>`;
-          appEl.innerHTML = currentHtml;
+          currentHtml = `<!doctype html><html><body><pre style="color:red; white-space:pre-wrap;">${msg.message}</pre></body></html>`;
+          appEl.srcdoc = currentHtml;
           renderTranscript();
           statusEl.textContent = "";
         }
@@ -173,48 +156,54 @@
     return state;
   }
 
-  // Event delegation: any element with data-action, or any real <a href>, inside #app
-  // drives the next turn. Real links are intercepted rather than constrained -- the model
-  // can write authentic-looking hrefs freely; clicking one never actually navigates, it just
-  // asks the model to generate whatever should come next.
-  appEl.addEventListener("click", (e) => {
-    const link = e.target.closest("a[href]");
-    const actionEl = e.target.closest("[data-action]");
-    const el = actionEl || link;
-    if (!el || !appEl.contains(el)) return;
-    e.preventDefault();
+  // Event delegation: any element with data-action, or any real <a href>, inside the
+  // iframe's document drives the next turn. Real links are intercepted rather than
+  // constrained -- the model can write authentic-looking hrefs freely; clicking one never
+  // actually navigates, it just asks the model to generate whatever should come next.
+  // The iframe gets a whole new document every time we set srcdoc, so listeners are
+  // re-attached on each "load" rather than once at startup.
+  appEl.addEventListener("load", () => {
+    const doc = appEl.contentDocument;
 
-    const action = el.dataset.action || "navigate";
-    const elementData = {};
-    for (const [k, v] of Object.entries(el.dataset)) {
-      if (k !== "action") elementData[k] = v;
-    }
-    if (link) {
-      elementData.href = elementData.href || link.getAttribute("href");
-      elementData.linkText = elementData.linkText || link.textContent.trim();
-    }
+    doc.addEventListener("click", (e) => {
+      const link = e.target.closest("a[href]");
+      const actionEl = e.target.closest("[data-action]");
+      const el = actionEl || link;
+      if (!el) return;
+      e.preventDefault();
 
-    const formValues = collectFormState(appEl);
+      const action = el.dataset.action || "navigate";
+      const elementData = {};
+      for (const [k, v] of Object.entries(el.dataset)) {
+        if (k !== "action") elementData[k] = v;
+      }
+      if (link) {
+        elementData.href = elementData.href || link.getAttribute("href");
+        elementData.linkText = elementData.linkText || link.textContent.trim();
+      }
 
-    sendTurn({ event: "click", action, elementData, formValues });
-  });
+      const formValues = collectFormState(doc);
 
-  // Catch form submissions too -- including Enter-key submits, which never fire a click on
-  // any button at all and would otherwise bypass the delegation above entirely.
-  appEl.addEventListener("submit", (e) => {
-    const form = e.target.closest("form");
-    if (!form || !appEl.contains(form)) return;
-    e.preventDefault();
+      sendTurn({ event: "click", action, elementData, formValues });
+    });
 
-    const action = form.dataset.action || "submit";
-    const elementData = {};
-    for (const [k, v] of Object.entries(form.dataset)) {
-      if (k !== "action") elementData[k] = v;
-    }
+    // Catch form submissions too -- including Enter-key submits, which never fire a click
+    // on any button at all and would otherwise bypass the delegation above entirely.
+    doc.addEventListener("submit", (e) => {
+      const form = e.target.closest("form");
+      if (!form) return;
+      e.preventDefault();
 
-    const formValues = collectFormState(appEl);
+      const action = form.dataset.action || "submit";
+      const elementData = {};
+      for (const [k, v] of Object.entries(form.dataset)) {
+        if (k !== "action") elementData[k] = v;
+      }
 
-    sendTurn({ event: "submit", action, elementData, formValues });
+      const formValues = collectFormState(doc);
+
+      sendTurn({ event: "submit", action, elementData, formValues });
+    });
   });
 </script>
 
