@@ -4,16 +4,22 @@
 <meta charset="utf-8">
 <title>UUI</title>
 <style>
-  body { font-family: system-ui, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 16px; color: #222; }
-  #bootstrap { display: flex; gap: 8px; margin-bottom: 24px; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: system-ui, sans-serif; color: #222;
+    display: flex; flex-direction: column; height: 100vh; overflow: hidden;
+  }
+  #topbar, #bootstrap, #status { flex: 0 0 auto; padding: 8px 16px; box-sizing: border-box; }
+  #topbar { display: flex; justify-content: space-between; align-items: center; padding-bottom: 0; }
+  #topbar h3 { margin: 8px 0; }
+  #topbar button { font-size: 12px; }
+  #bootstrap { display: flex; gap: 8px; }
   #bootstrap input { flex: 1; padding: 8px; font-size: 14px; }
   #bootstrap button { padding: 8px 16px; }
-  #app { border: 1px solid #ddd; border-radius: 8px; padding: 16px; min-height: 120px; }
-  #status { font-size: 12px; color: #888; margin: 8px 0; min-height: 16px; }
-  details { margin-top: 24px; font-size: 12px; }
-  #transcript { background: #f6f6f6; padding: 8px; max-height: 300px; overflow: auto; white-space: pre-wrap; }
-  #topbar { display: flex; justify-content: space-between; align-items: center; }
-  #topbar button { font-size: 12px; }
+  #status { font-size: 12px; color: #888; min-height: 16px; padding-top: 0; padding-bottom: 0; }
+  #app { flex: 1 1 auto; min-height: 0; overflow: auto; border-top: 1px solid #ddd; }
+  details { flex: 0 0 auto; font-size: 12px; padding: 4px 16px; }
+  #transcript { background: #f6f6f6; padding: 8px; max-height: 200px; overflow: auto; white-space: pre-wrap; }
 </style>
 </head>
 <body>
@@ -37,25 +43,38 @@
 </details>
 
 <script>
-  const messages = [];               // running transcript, in-memory only
+  let currentHtml = "";              // exactly what's on screen right now
+  const actions = [];                // full event log, in-memory only
   const appEl = document.getElementById("app");
   const statusEl = document.getElementById("status");
   const transcriptEl = document.getElementById("transcript");
   const bootstrapEl = document.getElementById("bootstrap");
 
   function renderTranscript() {
-    transcriptEl.textContent = JSON.stringify(messages, null, 2);
+    transcriptEl.textContent = JSON.stringify({ currentHtml, actions }, null, 2);
   }
 
-  async function sendTurn(userContent) {
-    messages.push({ role: "user", content: userContent });
+  // <script> tags set via innerHTML are inert -- recreate them so they actually run.
+  function executeScripts(container) {
+    container.querySelectorAll("script").forEach((oldScript) => {
+      const newScript = document.createElement("script");
+      for (const attr of oldScript.attributes) {
+        newScript.setAttribute(attr.name, attr.value);
+      }
+      newScript.textContent = oldScript.textContent;
+      oldScript.replaceWith(newScript);
+    });
+  }
+
+  async function sendTurn(event) {
+    actions.push(event);
     renderTranscript();
     statusEl.textContent = "generating...";
 
     const res = await fetch("/generate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages }),
+      body: JSON.stringify({ current_html: currentHtml, actions }),
     });
 
     const reader = res.body.getReader();
@@ -70,8 +89,13 @@
 
     // Swap the DOM only once the fragment is complete -- partial HTML mid-tag
     // isn't valid to inject incrementally.
+    currentHtml = acc;
     appEl.innerHTML = acc;               // NOTE: intentionally unsanitized, by design
-    messages.push({ role: "assistant", content: acc });
+    executeScripts(appEl);
+    // Generated scripts sometimes wait for DOMContentLoaded/load out of habit, even though
+    // those already fired -- re-dispatch synthetic copies so such listeners still run.
+    document.dispatchEvent(new Event("DOMContentLoaded"));
+    window.dispatchEvent(new Event("load"));
     renderTranscript();
     statusEl.textContent = "";
   }
@@ -79,29 +103,74 @@
   document.getElementById("start-btn").addEventListener("click", () => {
     const concept = document.getElementById("concept").value.trim() || "a simple demo app";
     bootstrapEl.style.display = "none";
-    sendTurn(JSON.stringify({ event: "start", concept }));
+    sendTurn({ event: "start", concept });
   });
 
   document.getElementById("reset-btn").addEventListener("click", () => location.reload());
 
-  // Event delegation: any element with data-action inside #app drives the next turn.
+  // Deterministically read every form control's real state -- checkboxes/radios need
+  // .checked, not .value (which stays truthy even when unchecked).
+  function collectFormState(container) {
+    const state = {};
+    container.querySelectorAll("input, select, textarea").forEach((field) => {
+      const key = field.name || field.id;
+      if (!key) return;
+      if (field.type === "checkbox") {
+        state[key] = field.checked;
+      } else if (field.type === "radio") {
+        if (field.checked) state[key] = field.value;
+        else if (!(key in state)) state[key] = null;
+      } else if (field.tagName === "SELECT" && field.multiple) {
+        state[key] = Array.from(field.selectedOptions).map((o) => o.value);
+      } else {
+        state[key] = field.value;
+      }
+    });
+    return state;
+  }
+
+  // Event delegation: any element with data-action, or any real <a href>, inside #app
+  // drives the next turn. Real links are intercepted rather than constrained -- the model
+  // can write authentic-looking hrefs freely; clicking one never actually navigates, it just
+  // asks the model to generate whatever should come next.
   appEl.addEventListener("click", (e) => {
-    const el = e.target.closest("[data-action]");
+    const link = e.target.closest("a[href]");
+    const actionEl = e.target.closest("[data-action]");
+    const el = actionEl || link;
     if (!el || !appEl.contains(el)) return;
     e.preventDefault();
 
-    const action = el.dataset.action;
+    const action = el.dataset.action || "navigate";
     const elementData = {};
     for (const [k, v] of Object.entries(el.dataset)) {
       if (k !== "action") elementData[k] = v;
     }
+    if (link) {
+      elementData.href = elementData.href || link.getAttribute("href");
+      elementData.linkText = elementData.linkText || link.textContent.trim();
+    }
 
-    const formValues = {};
-    appEl.querySelectorAll("[name]").forEach((field) => {
-      formValues[field.name] = field.value;
-    });
+    const formValues = collectFormState(appEl);
 
-    sendTurn(JSON.stringify({ event: "click", action, elementData, formValues }));
+    sendTurn({ event: "click", action, elementData, formValues });
+  });
+
+  // Catch form submissions too -- including Enter-key submits, which never fire a click on
+  // any button at all and would otherwise bypass the delegation above entirely.
+  appEl.addEventListener("submit", (e) => {
+    const form = e.target.closest("form");
+    if (!form || !appEl.contains(form)) return;
+    e.preventDefault();
+
+    const action = form.dataset.action || "submit";
+    const elementData = {};
+    for (const [k, v] of Object.entries(form.dataset)) {
+      if (k !== "action") elementData[k] = v;
+    }
+
+    const formValues = collectFormState(appEl);
+
+    sendTurn({ event: "submit", action, elementData, formValues });
   });
 </script>
 

@@ -11,40 +11,54 @@ from pydantic import BaseModel
 FENCE_RE = re.compile(r"^\s*```[a-zA-Z0-9]*\n?|\n?```\s*$")
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
-MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:7b")
+MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:3b")
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
-SYSTEM_PROMPT = """You are the live HTML renderer for a single-page web app running inside a div with id="app".
+SYSTEM_PROMPT = """You render a single-page app live, as ONE HTML FRAGMENT (never a full document), inside a div with id="app" that fills the viewport.
 
-Every "user" role message describes a UI event as JSON:
-  {"event": "start", "concept": "<what the user wants the app to be>"}
-  {"event": "click", "action": "<the data-action value>", "elementData": {...}, "formValues": {...}}
+Each request gives you CURRENT HTML (exactly what's on screen right now, empty if nothing yet)
+and an ACTION TIMELINE (every UI event so far, oldest first, as JSON):
+  {"event": "start", "concept": "<what the app should be>"}
+  {"event": "click", "action": "<data-action value, or \"navigate\" for a plain link>", "elementData": {...}, "formValues": {...}}
+  {"event": "submit", "action": "<the form's data-action, or \"submit\">", "elementData": {...}, "formValues": {...}}
 
-elementData holds any data-* attributes (other than data-action) on the clicked element.
-formValues holds the current value of every named form field on screen at click time.
+elementData: the element's data-* attributes (a link also gets {href, linkText}).
+formValues: every input/select/textarea's real current state, keyed by name (or id) --
+checkboxes true/false, a radio group its selected value or null, multi-select an array,
+else the string value. Always accurate -- trust it completely.
 
-Reply with ONLY the raw HTML that should replace the entire contents of #app. Rules:
-- No <html>, <head>, or <body> tags -- just the fragment.
-- No markdown code fences, no commentary, no explanation. Output must start directly with HTML.
-- Any element that should trigger the next step (buttons, links, etc.) must have a
-  data-action="..." attribute describing what happens, e.g. data-action="submit-guess".
-- Any input/select/textarea whose value matters later must have a name="..." attribute.
-- Keep the UI visually coherent with what you generated last turn unless the action implies
-  a full transition.
-- Inline <style> is fine. Inline <script> will NOT execute (it's injected via innerHTML), so
-  express all interactivity through data-action + regeneration, not JavaScript.
+React to the LAST action in the timeline: render the screen that results from it actually
+happening. Be creative and commit to fully realized, specific content -- real-sounding
+titles, names, numbers, descriptions -- that reads like an actual website, not a mockup.
+ABSOLUTELY NO PLACEHOLDER TEXT, "Result 1"/"Lorem ipsum"-style filler, "searching..."/
+loading/pending states, or empty stubs left for a future turn. Every screen you output is
+the final, fully populated result, invented by you, right now.
+
+Reply with ONLY the raw HTML fragment to replace #app's contents:
+- Fragment only -- no <!DOCTYPE>, <html>, <head>, <title>, <meta>, <body>. No code fences,
+  no commentary.
+- data-action="..." on anything (besides plain links) that should trigger the next step.
+- name="..." on any input/select/textarea whose value matters later.
+- Design full-height/full-width -- #app fills the whole viewport.
+- Make it look genuinely good: real inline CSS -- typography, color, spacing, flexbox/grid,
+  transitions.
+- If the concept names a real product/site/app, replicate its actual visual identity as best
+  you recall (colors, logo, layout, chrome) around fully fabricated content.
+- Use real <img> tags: link real URLs you believe exist for logos/photos, or
+  <img src="https://picsum.photos/<w>/<h>?random=<n>"> for generic filler.
+- Never fetch()/XHR a real external API -- no backend exists for that. Write all data
+  directly into the HTML/JS yourself.
+- Inline <script> executes (re-inserted after every update). It runs after the page already
+  loaded, so never wrap it in DOMContentLoaded/window.onload -- write top-level code. Don't
+  use window.location/window.open.
 """
 
 app = FastAPI()
 
 
-class Message(BaseModel):
-    role: str
-    content: str
-
-
 class GenerateRequest(BaseModel):
-    messages: list[Message]
+    current_html: str = ""
+    actions: list[dict]
     model: str | None = None
 
 
@@ -55,8 +69,14 @@ async def index():
 
 @app.post("/generate")
 async def generate(req: GenerateRequest):
-    payload_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    payload_messages += [m.model_dump() for m in req.messages]
+    user_content = (
+        f"CURRENT HTML:\n{req.current_html or '(empty -- nothing rendered yet)'}\n\n"
+        f"ACTION TIMELINE (oldest first):\n{json.dumps(req.actions, indent=2)}"
+    )
+    payload_messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": user_content},
+    ]
 
     async def stream():
         async with httpx.AsyncClient(timeout=None) as client:

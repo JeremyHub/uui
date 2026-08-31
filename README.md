@@ -7,13 +7,17 @@ every turn, and it resets on page reload.
 
 ## Run
 
-```
-# terminal 1
-ollama serve
-ollama pull <model>        # e.g. llama3.1, or something smaller/faster
+Ollama needs to be running (on this machine it's a systemd service -- `systemctl status ollama`
+-- so you likely don't need to start it yourself) with a model pulled. Pick a model that fits
+your VRAM; `qwen2.5-coder:3b` (~2GB) is the default and works well on a 4GB card.
 
-# terminal 2
-OLLAMA_MODEL=<model> uv run uvicorn backend.main:app --reload
 ```
+ollama pull qwen2.5-coder:3b     # only needed once
+
+uv run uvicorn backend.main:app --reload
+```
+
+Override the model with `OLLAMA_MODEL=<model> uv run ...`. Check `ollama ps` while it's
+generating to confirm it's actually running on the GPU (PROCESSOR column).
 
 Then open http://localhost:8000/
