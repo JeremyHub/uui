@@ -5,11 +5,14 @@ streams back raw HTML, which the frontend injects directly (unsanitized) into th
 The backend holds no state between requests -- the frontend resends the full transcript
 every turn, and it resets on page reload.
 
-Each turn runs two model calls: a **plan** phase that decides what should happen next
-(concrete content and interactions, as text) given the timeline/current HTML/browser
-state, then a **generate** phase that turns that plan into the actual HTML/CSS/JS
-fragment. `/generate` streams both phases back as NDJSON so the frontend can show
-progress through each one.
+Each turn runs three model calls: a **plan** phase that decides what should happen next
+(concrete content and interactions, as text) given the timeline and a prose summary of
+the current screen, a **generate** phase that turns that plan into the actual HTML/CSS/JS
+fragment, and a **summary** phase that describes what was just generated. That summary
+-- not the raw HTML -- is what the next turn's plan phase sees, since giving the planner
+the actual markup made it treat old HTML as material to preserve rather than a screen it's
+free to fully replace. `/generate` streams all three phases back as NDJSON so the frontend
+can show progress through each one.
 
 ## Run
 

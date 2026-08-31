@@ -44,6 +44,7 @@
 
 <script>
   let currentHtml = "";              // exactly what's on screen right now
+  let lastSummary = "";              // prose description of currentHtml, from the summary phase
   const actions = [];                // full event log, in-memory only
   const appEl = document.getElementById("app");
   const statusEl = document.getElementById("status");
@@ -51,7 +52,7 @@
   const bootstrapEl = document.getElementById("bootstrap");
 
   function renderTranscript() {
-    transcriptEl.textContent = JSON.stringify({ currentHtml, actions }, null, 2);
+    transcriptEl.textContent = JSON.stringify({ currentHtml, lastSummary, actions }, null, 2);
   }
 
   // <script> tags set via innerHTML are inert -- recreate them so they actually run.
@@ -66,24 +67,27 @@
     });
   }
 
-  // Backend runs two phases per turn: "plan" (a text description of what should
-  // happen next) then "html" (the fragment that implements it). Both stream as
-  // NDJSON lines so status/transcript can reflect progress through each phase.
+  // Backend runs four phases per turn: "intent" (given the last summary, the raw current
+  // HTML, and the action just taken, describe what the user was trying to do), "plan"
+  // (given the last summary and that intent, decide what happens next), "html" (implement
+  // that plan), then "summary" (describe what the html phase actually produced, in prose,
+  // so next turn's intent/plan phases read that instead of the raw HTML -- otherwise
+  // planning tends to treat old markup as something to preserve rather than a screen it's
+  // free to fully replace). All four stream as NDJSON lines.
   async function sendTurn(event) {
     actions.push(event);
     renderTranscript();
-    statusEl.textContent = "planning...";
+    statusEl.textContent = "interpreting...";
 
     const res = await fetch("/generate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ current_html: currentHtml, actions }),
+      body: JSON.stringify({ current_html: currentHtml, summary: lastSummary, actions }),
     });
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buf = "";
-    let finalHtml = null;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -97,7 +101,13 @@
         if (!line) continue;
         const msg = JSON.parse(line);
 
-        if (msg.phase === "plan" && !msg.done) {
+        if (msg.phase === "intent" && !msg.done) {
+          statusEl.textContent = `interpreting... (${msg.chars} chars)`;
+        } else if (msg.phase === "intent" && msg.done) {
+          event.intent = msg.text;         // recorded on the timeline entry for the transcript
+          renderTranscript();
+          statusEl.textContent = "planning...";
+        } else if (msg.phase === "plan" && !msg.done) {
           statusEl.textContent = `planning... (${msg.chars} chars)`;
         } else if (msg.phase === "plan" && msg.done) {
           event.plan = msg.text;           // recorded on the timeline entry for the transcript
@@ -106,24 +116,32 @@
         } else if (msg.phase === "html" && !msg.done) {
           statusEl.textContent = `generating... (${msg.chars} chars)`;
         } else if (msg.phase === "html" && msg.done) {
-          finalHtml = msg.text;
+          // Swap the DOM as soon as the fragment is complete -- don't make the user
+          // wait through the summary phase too before seeing the new screen.
+          currentHtml = msg.text;
+          appEl.innerHTML = currentHtml;   // NOTE: intentionally unsanitized, by design
+          executeScripts(appEl);
+          // Generated scripts sometimes wait for DOMContentLoaded/load out of habit, even
+          // though those already fired -- re-dispatch synthetic copies so listeners still run.
+          document.dispatchEvent(new Event("DOMContentLoaded"));
+          window.dispatchEvent(new Event("load"));
+          renderTranscript();
+          statusEl.textContent = "summarizing...";
+        } else if (msg.phase === "summary" && !msg.done) {
+          statusEl.textContent = `summarizing... (${msg.chars} chars)`;
+        } else if (msg.phase === "summary" && msg.done) {
+          lastSummary = msg.text;
+          event.summary = msg.text;        // recorded on the timeline entry for the transcript
+          renderTranscript();
+          statusEl.textContent = "";
         } else if (msg.phase === "error") {
-          finalHtml = `<pre style="color:red; white-space:pre-wrap;">${msg.message}</pre>`;
+          currentHtml = `<pre style="color:red; white-space:pre-wrap;">${msg.message}</pre>`;
+          appEl.innerHTML = currentHtml;
+          renderTranscript();
+          statusEl.textContent = "";
         }
       }
     }
-
-    // Swap the DOM only once the fragment is complete -- partial HTML mid-tag
-    // isn't valid to inject incrementally.
-    currentHtml = finalHtml || "";
-    appEl.innerHTML = currentHtml;        // NOTE: intentionally unsanitized, by design
-    executeScripts(appEl);
-    // Generated scripts sometimes wait for DOMContentLoaded/load out of habit, even though
-    // those already fired -- re-dispatch synthetic copies so such listeners still run.
-    document.dispatchEvent(new Event("DOMContentLoaded"));
-    window.dispatchEvent(new Event("load"));
-    renderTranscript();
-    statusEl.textContent = "";
   }
 
   document.getElementById("start-btn").addEventListener("click", () => {

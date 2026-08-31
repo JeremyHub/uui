@@ -14,47 +14,72 @@ OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 MODEL = os.environ.get("OLLAMA_MODEL", "gemma3:4b")
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
-PLAN_SYSTEM_PROMPT = """You are the planning phase of a two-phase live UI generator. A separate model
+INTENT_SYSTEM_PROMPT = """You are the intent phase of a four-phase live UI generator. You write NO
+HTML, CSS, or JS, and you don't decide what happens next -- you only describe what the user was
+trying to do, for the planning phase after you to act on.
+
+Each request gives you:
+- SUMMARY OF CURRENT SCREEN: a plain-text description of what's shown right now, written after the
+  last screen was generated (empty if nothing yet).
+- CURRENT HTML: the actual markup on screen right now (empty if nothing yet) -- use it only to
+  resolve details the summary leaves out (exact wording, structure), not as something to plan
+  around.
+- ACTION: the single UI event the user just triggered, as JSON, one of:
+    {"event": "start", "concept": "<what the app should be>"}
+    {"event": "click", "action": "<data-action value, or \"navigate\" for a plain link>", "elementData": {...}, "formValues": {...}}
+    {"event": "submit", "action": "<the form's data-action, or \"submit\">", "elementData": {...}, "formValues": {...}}
+
+  elementData: the element's data-* attributes (a link also gets {href, linkText}).
+  formValues: every input/select/textarea's real current state (the browser's live state) at the
+  moment of the action, keyed by name (or id) -- checkboxes true/false, a radio group its selected
+  value or null, multi-select an array, else the string value. Always accurate -- trust it completely.
+
+Write a short plain-text statement of the user's intent: what they were trying to accomplish with
+this action and what they now expect to see, grounded in the actual data they entered (formValues)
+and the actual thing they interacted with (elementData). For a "start" event, the intent is simply
+to begin using the described concept.
+
+Output ONLY the intent statement, a sentence or two. No HTML, no code fences, no commentary about
+this task itself.
+"""
+
+PLAN_SYSTEM_PROMPT = """You are the planning phase of a four-phase live UI generator. A separate model
 will take your plan and turn it into HTML -- you write NO HTML, CSS, or JS yourself, only the plan.
 
-Each request gives you CURRENT HTML (exactly what's on screen right now, empty if nothing yet)
-and an ACTION TIMELINE (every UI event so far, oldest first, as JSON):
-  {"event": "start", "concept": "<what the app should be>"}
-  {"event": "click", "action": "<data-action value, or \"navigate\" for a plain link>", "elementData": {...}, "formValues": {...}}
-  {"event": "submit", "action": "<the form's data-action, or \"submit\">", "elementData": {...}, "formValues": {...}}
+Each request gives you:
+- SUMMARY OF CURRENT SCREEN: a plain-text description of what's shown right now, written after the
+  last screen was generated (empty if nothing yet).
+- USER INTENT: a plain-text statement, written by an earlier phase, of what the user was trying to
+  do with their last action and what they now expect to see.
 
-elementData: the element's data-* attributes (a link also gets {href, linkText}).
-formValues: every input/select/textarea's real current state (the browser's live state) at the
-moment of the action, keyed by name (or id) -- checkboxes true/false, a radio group its selected
-value or null, multi-select an array, else the string value. Always accurate -- trust it completely.
+You do not see the current screen's actual HTML, only its summary -- treat the summary as a
+description of a screen the user is looking at that you're deciding how to replace, not as
+existing material to reuse or preserve. Nothing about it is fixed just because it happened before.
 
-React to the LAST action in the timeline: decide what screen results from it actually happening.
-Be creative and commit to fully realized, specific content -- real-sounding titles, names,
-numbers, descriptions -- that reads like an actual website, not a mockup. ABSOLUTELY NO
-PLACEHOLDER TEXT, "Result 1"/"Lorem ipsum"-style filler, "searching..."/loading/pending states,
-or empty stubs left for a future turn. Decide the final, fully populated result yourself, right now.
+Decide what screen should result from the user's intent actually being satisfied. Be creative and
+commit to fully realized, specific content -- real-sounding titles, names, numbers, descriptions --
+that reads like an actual website, not a mockup. ABSOLUTELY NO PLACEHOLDER TEXT, "Result
+1"/"Lorem ipsum"-style filler, "searching..."/loading/pending states, or empty stubs left for a
+future turn. Decide the final, fully populated result yourself, right now.
 
 Write a plain-text plan (no HTML, no code fences) covering:
-- What this screen/state is and why it follows from the last action.
+- What this screen/state is and why it follows from the user's intent.
 - The actual content to show, spelled out concretely -- real titles, numbers, names, copy, not
   categories or placeholders.
 - Every interactive element the next turn will need: what it is, its exact label/text, and what
   should happen when it's triggered (this becomes a data-action name and, for inputs, a name
   attribute).
-- Visual/identity notes worth carrying forward from CURRENT HTML, including replicating a real
-  product/site's actual look (colors, logo, layout, chrome) if the concept names one.
+- Visual/identity notes worth carrying forward from the summary, if any, including replicating a
+  real product/site's actual look (colors, logo, layout, chrome) if the concept names one.
 
 Output ONLY the plan. No HTML, no commentary about this task itself.
 """
 
 GENERATE_SYSTEM_PROMPT = """You render a single-page app live, as ONE HTML FRAGMENT (never a full document), inside a div with id="app" that fills the viewport.
 
-You are the generation phase of a two-phase pipeline: another model already decided what should
-appear next and wrote it up as PLAN below. Implement that plan faithfully -- don't invent
-different content or second-guess its decisions, just turn it into good HTML/CSS/JS.
-
-You're also given CURRENT HTML (exactly what's on screen right now, empty if nothing yet) purely
-for visual continuity (matching fonts, colors, layout conventions already established).
+You are the generation phase of a four-phase pipeline: an earlier phase already decided what
+should appear next and wrote it up as the PLAN below. Implement that plan faithfully -- don't
+invent different content or second-guess its decisions, just turn it into good HTML/CSS/JS.
 
 Reply with ONLY the raw HTML fragment to replace #app's contents:
 - Fragment only -- no <!DOCTYPE>, <html>, <head>, <title>, <meta>, <body>. No code fences,
@@ -74,11 +99,30 @@ Reply with ONLY the raw HTML fragment to replace #app's contents:
   use window.location/window.open.
 """
 
+SUMMARY_SYSTEM_PROMPT = """You are the summary phase of a four-phase live UI generator. You just
+receive an HTML fragment (the entire contents of a div with id="app") and describe it in plain text
+for the NEXT turn's intent and planning phases, which will decide what happens after the user's
+next interaction -- they will NOT see this HTML, only your summary. You write NO HTML, CSS, or JS
+yourself.
+
+Write a concise plain-text summary (no HTML, no code fences) covering:
+- What screen/state this is and its purpose.
+- The concrete content actually shown -- real titles, numbers, names, copy -- summarized rather
+  than quoted in full, unless the exact wording matters for a future decision.
+- Every interactive element present: its label/text, its data-action (or "navigate" for links),
+  and any name="..." attributes whose current/possible values might matter later.
+- Layout/visual identity worth remembering (theme, colors, whether it replicates a real product's
+  look).
+
+Output ONLY the summary. No HTML, no commentary about this task itself.
+"""
+
 app = FastAPI()
 
 
 class GenerateRequest(BaseModel):
     current_html: str = ""
+    summary: str = ""
     actions: list[dict]
     model: str | None = None
 
@@ -117,17 +161,40 @@ async def ollama_chat_stream(client: httpx.AsyncClient, model: str, messages: li
 async def generate(req: GenerateRequest):
     model = req.model or MODEL
     current_html = req.current_html or "(empty -- nothing rendered yet)"
-    timeline = json.dumps(req.actions, indent=2)
+    summary = req.summary or "(nothing yet -- this is the first screen)"
+    last_action = req.actions[-1] if req.actions else {}
+    action_json = json.dumps(last_action, indent=2)
 
     async def stream():
-        # Response is NDJSON so the frontend can surface both phases (plan, then
-        # html) as they complete, rather than only seeing the final fragment.
+        # Response is NDJSON so the frontend can surface all four phases (intent,
+        # plan, html, summary) as they complete, rather than only seeing the final
+        # fragment. Only the intent phase sees the raw current HTML and action --
+        # planning works from the summary and the intent statement alone, so it
+        # treats the prior screen as replaceable rather than material to preserve.
         async with httpx.AsyncClient(timeout=None) as client:
+            intent_messages = [
+                {"role": "system", "content": INTENT_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": f"SUMMARY OF CURRENT SCREEN:\n{summary}\n\nCURRENT HTML:\n{current_html}\n\nACTION:\n{action_json}",
+                },
+            ]
+            parts = []
+            try:
+                async for piece in ollama_chat_stream(client, model, intent_messages):
+                    parts.append(piece)
+                    yield json.dumps({"phase": "intent", "done": False, "chars": sum(len(p) for p in parts)}) + "\n"
+            except OllamaError as e:
+                yield json.dumps({"phase": "error", "message": str(e)}) + "\n"
+                return
+            intent_text = FENCE_RE.sub("", "".join(parts)).strip()
+            yield json.dumps({"phase": "intent", "done": True, "text": intent_text}) + "\n"
+
             plan_messages = [
                 {"role": "system", "content": PLAN_SYSTEM_PROMPT},
                 {
                     "role": "user",
-                    "content": f"CURRENT HTML:\n{current_html}\n\nACTION TIMELINE (oldest first):\n{timeline}",
+                    "content": f"SUMMARY OF CURRENT SCREEN:\n{summary}\n\nUSER INTENT:\n{intent_text}",
                 },
             ]
             parts = []
@@ -143,10 +210,7 @@ async def generate(req: GenerateRequest):
 
             generate_messages = [
                 {"role": "system", "content": GENERATE_SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": f"PLAN:\n{plan_text}\n\nCURRENT HTML:\n{current_html}",
-                },
+                {"role": "user", "content": f"PLAN:\n{plan_text}"},
             ]
             parts = []
             try:
@@ -161,5 +225,20 @@ async def generate(req: GenerateRequest):
             # once the full response is in hand.
             html = FENCE_RE.sub("", "".join(parts))
             yield json.dumps({"phase": "html", "done": True, "text": html}) + "\n"
+
+            summary_messages = [
+                {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
+                {"role": "user", "content": f"HTML:\n{html}"},
+            ]
+            parts = []
+            try:
+                async for piece in ollama_chat_stream(client, model, summary_messages):
+                    parts.append(piece)
+                    yield json.dumps({"phase": "summary", "done": False, "chars": sum(len(p) for p in parts)}) + "\n"
+            except OllamaError as e:
+                yield json.dumps({"phase": "error", "message": str(e)}) + "\n"
+                return
+            summary_text = FENCE_RE.sub("", "".join(parts)).strip()
+            yield json.dumps({"phase": "summary", "done": True, "text": summary_text}) + "\n"
 
     return StreamingResponse(stream(), media_type="application/x-ndjson")
