@@ -11,7 +11,8 @@ from pydantic import BaseModel
 FENCE_RE = re.compile(r"^\s*```[a-zA-Z0-9]*\n?|\n?```\s*$")
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
-MODEL = os.environ.get("OLLAMA_MODEL", "gemma3:4b")
+# MODEL = os.environ.get("OLLAMA_MODEL", "gemma3:4b")
+MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:3b")
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
 INTENT_SYSTEM_PROMPT = """You are the intent phase of a four-phase live UI generator. You write NO
@@ -30,9 +31,10 @@ Each request gives you:
     {"event": "submit", "action": "<the form's data-action, or \"submit\">", "elementData": {...}, "formValues": {...}}
 
   elementData: the element's data-* attributes (a link also gets {href, linkText}).
-  formValues: every input/select/textarea's real current state (the browser's live state) at the
-  moment of the action, keyed by name (or id) -- checkboxes true/false, a radio group its selected
-  value or null, multi-select an array, else the string value. Always accurate -- trust it completely.
+  formValues: every input/select/textarea's real current state, plus every aria-pressed toggle
+  button's on/off state, all as of the moment of the action (the browser's live state), keyed by
+  name (or id) -- checkboxes and toggle buttons true/false, a radio group its selected value or
+  null, multi-select an array, else the string value. Always accurate -- trust it completely.
 
 Write a short plain-text statement of the user's intent: what they were trying to accomplish with
 this action and what they now expect to see, grounded in the actual data they entered (formValues)
@@ -88,6 +90,9 @@ Reply with ONLY the raw HTML document to load into the iframe:
 - data-action="..." on anything (besides plain links) that should trigger the next step, matching
   what the plan calls for.
 - name="..." on any input/select/textarea whose value matters later.
+- For a toggle-style button whose on/off state matters later (a "liked" state, an active filter
+  chip, a pressed icon button) and that isn't a real checkbox, give it name="..." and
+  aria-pressed="true" or "false" reflecting its current state -- this round-trips like a checkbox.
 - Design full-height/full-width -- the document fills the whole viewport (e.g. html, body { height:
   100%; margin: 0; }).
 - Make it look genuinely good: real CSS -- typography, color, spacing, flexbox/grid, transitions.

@@ -136,7 +136,9 @@
   document.getElementById("reset-btn").addEventListener("click", () => location.reload());
 
   // Deterministically read every form control's real state -- checkboxes/radios need
-  // .checked, not .value (which stays truthy even when unchecked).
+  // .checked, not .value (which stays truthy even when unchecked). Also picks up
+  // aria-pressed toggle buttons, since a toggle-style button (e.g. a "liked" state, an
+  // active filter chip) has nowhere else to keep its on/off state across a hop.
   function collectFormState(container) {
     const state = {};
     container.querySelectorAll("input, select, textarea").forEach((field) => {
@@ -153,6 +155,11 @@
         state[key] = field.value;
       }
     });
+    container.querySelectorAll("[aria-pressed]").forEach((el) => {
+      const key = el.name || el.id;
+      if (!key) return;
+      state[key] = el.getAttribute("aria-pressed") === "true";
+    });
     return state;
   }
 
@@ -165,45 +172,60 @@
   appEl.addEventListener("load", () => {
     const doc = appEl.contentDocument;
 
-    doc.addEventListener("click", (e) => {
-      const link = e.target.closest("a[href]");
-      const actionEl = e.target.closest("[data-action]");
-      const el = actionEl || link;
-      if (!el) return;
-      e.preventDefault();
+    // Capture phase + stopImmediatePropagation: generated documents sometimes attach their
+    // own listeners directly on the clicked element (e.g. real webpages tend to wire up
+    // window.location-driven "navigation" despite being told not to) -- those run before a
+    // bubble-phase listener ever would. Intercepting in the capture phase guarantees we see
+    // the event first and can kill it before any such handler executes.
+    doc.addEventListener(
+      "click",
+      (e) => {
+        const link = e.target.closest("a[href]");
+        const actionEl = e.target.closest("[data-action]");
+        const el = actionEl || link;
+        if (!el) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
 
-      const action = el.dataset.action || "navigate";
-      const elementData = {};
-      for (const [k, v] of Object.entries(el.dataset)) {
-        if (k !== "action") elementData[k] = v;
-      }
-      if (link) {
-        elementData.href = elementData.href || link.getAttribute("href");
-        elementData.linkText = elementData.linkText || link.textContent.trim();
-      }
+        const action = el.dataset.action || "navigate";
+        const elementData = {};
+        for (const [k, v] of Object.entries(el.dataset)) {
+          if (k !== "action") elementData[k] = v;
+        }
+        if (link) {
+          elementData.href = elementData.href || link.getAttribute("href");
+          elementData.linkText = elementData.linkText || link.textContent.trim();
+        }
 
-      const formValues = collectFormState(doc);
+        const formValues = collectFormState(doc);
 
-      sendTurn({ event: "click", action, elementData, formValues });
-    });
+        sendTurn({ event: "click", action, elementData, formValues });
+      },
+      true
+    );
 
     // Catch form submissions too -- including Enter-key submits, which never fire a click
     // on any button at all and would otherwise bypass the delegation above entirely.
-    doc.addEventListener("submit", (e) => {
-      const form = e.target.closest("form");
-      if (!form) return;
-      e.preventDefault();
+    doc.addEventListener(
+      "submit",
+      (e) => {
+        const form = e.target.closest("form");
+        if (!form) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
 
-      const action = form.dataset.action || "submit";
-      const elementData = {};
-      for (const [k, v] of Object.entries(form.dataset)) {
-        if (k !== "action") elementData[k] = v;
-      }
+        const action = form.dataset.action || "submit";
+        const elementData = {};
+        for (const [k, v] of Object.entries(form.dataset)) {
+          if (k !== "action") elementData[k] = v;
+        }
 
-      const formValues = collectFormState(doc);
+        const formValues = collectFormState(doc);
 
-      sendTurn({ event: "submit", action, elementData, formValues });
-    });
+        sendTurn({ event: "submit", action, elementData, formValues });
+      },
+      true
+    );
   });
 </script>
 
