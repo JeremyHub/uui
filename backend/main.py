@@ -15,17 +15,26 @@ OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:3b")
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
+START_INTENT_SYSTEM_PROMPT = """
+Given ACTION: a "start" event as JSON, carrying the concept the user typed for the app/screen they
+want generated.
+
+Write a short plain-text statement of the user's intent: what they want generated, grounded in the
+actual concept they described.
+
+Output ONLY the intent statement, a sentence or two.
+"""
+
 INTENT_SYSTEM_PROMPT = """
 Given:
-- SUMMARY OF CURRENT SCREEN: a plain-text description of what's shown right now (empty if nothing yet).
-- CURRENT HTML: the actual markup on screen right now (empty if nothing yet) -- use it to
+- SUMMARY OF CURRENT SCREEN: a plain-text description of what's shown right now.
+- CURRENT HTML: the actual markup on screen right now -- use it to
   resolve details the summary leaves out (exact wording, structure).
 - ACTION: the single UI event the user just triggered, as JSON.
 - elementData
 
 Write a short plain-text statement of the user's intent: what they were trying to accomplish with
 this action, grounded in the actual data they entered (formValues) and the actual thing they interacted with (elementData).
-For a "start" event, the intent is simply to generate the described concept.
 
 Output ONLY the intent statement, a sentence or two.
 """
@@ -120,13 +129,20 @@ async def generate(req: GenerateRequest):
         # planning works from the summary and the intent statement alone, so it
         # treats the prior screen as replaceable rather than material to preserve.
         async with httpx.AsyncClient(timeout=None) as client:
-            intent_messages = [
-                {"role": "system", "content": INTENT_SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": f"SUMMARY OF CURRENT SCREEN:\n{summary}\n\nCURRENT HTML:\n{current_html}\n\nACTION:\n{action_json}",
-                },
-            ]
+            is_start = last_action.get("event") == "start"
+            if is_start:
+                intent_messages = [
+                    {"role": "system", "content": START_INTENT_SYSTEM_PROMPT},
+                    {"role": "user", "content": f"ACTION:\n{action_json}"},
+                ]
+            else:
+                intent_messages = [
+                    {"role": "system", "content": INTENT_SYSTEM_PROMPT},
+                    {
+                        "role": "user",
+                        "content": f"SUMMARY OF CURRENT SCREEN:\n{summary}\n\nCURRENT HTML:\n{current_html}\n\nACTION:\n{action_json}",
+                    },
+                ]
             parts = []
             try:
                 async for piece in ollama_chat_stream(client, model, intent_messages):
