@@ -163,10 +163,30 @@
     return state;
   }
 
-  // Event delegation: any element with data-action, or any real <a href>, inside the
-  // iframe's document drives the next turn. Real links are intercepted rather than
-  // constrained -- the model can write authentic-looking hrefs freely; clicking one never
-  // actually navigates, it just asks the model to generate whatever should come next.
+  // Describes whatever the user actually interacted with, generically -- no special
+  // attribute (like a data-action name) is required from the generated page. Tag, visible
+  // text, and real attributes give the intent phase enough to figure out what happened. Any
+  // data-* attributes the model did add still pass through as bonus context.
+  function describeElement(el) {
+    const data = { ...el.dataset };
+    return {
+      tag: el.tagName.toLowerCase(),
+      text: el.textContent.trim().slice(0, 200),
+      id: el.id || undefined,
+      name: el.name || undefined,
+      className: el.className || undefined,
+      href: el.tagName === "A" ? el.getAttribute("href") : undefined,
+      type: el.type || undefined,
+      ...(Object.keys(data).length ? { data } : {}),
+    };
+  }
+
+  // Event delegation: deterministically captures clicks on every real interactive control
+  // (button, link, submit/button/reset input, role=button) inside the iframe's document --
+  // no matter what the model generated it as, no special markup required. Real links are
+  // intercepted rather than constrained -- the model can write authentic-looking hrefs
+  // freely; clicking one never actually navigates, it just asks the model to generate
+  // whatever should come next.
   // The iframe gets a whole new document every time we set srcdoc, so listeners are
   // re-attached on each "load" rather than once at startup.
   appEl.addEventListener("load", () => {
@@ -180,32 +200,25 @@
     doc.addEventListener(
       "click",
       (e) => {
-        const link = e.target.closest("a[href]");
-        const actionEl = e.target.closest("[data-action]");
-        const el = actionEl || link;
+        const el = e.target.closest(
+          'button, a[href], input[type="submit"], input[type="button"], input[type="reset"], [role="button"]'
+        );
         if (!el) return;
         e.preventDefault();
         e.stopImmediatePropagation();
 
-        const action = el.dataset.action || "navigate";
-        const elementData = {};
-        for (const [k, v] of Object.entries(el.dataset)) {
-          if (k !== "action") elementData[k] = v;
-        }
-        if (link) {
-          elementData.href = elementData.href || link.getAttribute("href");
-          elementData.linkText = elementData.linkText || link.textContent.trim();
-        }
-
+        const elementData = describeElement(el);
         const formValues = collectFormState(doc);
 
-        sendTurn({ event: "click", action, elementData, formValues });
+        sendTurn({ event: "click", elementData, formValues });
       },
       true
     );
 
     // Catch form submissions too -- including Enter-key submits, which never fire a click
     // on any button at all and would otherwise bypass the delegation above entirely.
+    // e.submitter is the specific button that triggered the submit (or the form itself, for
+    // an implicit Enter-key submit with no button focused).
     doc.addEventListener(
       "submit",
       (e) => {
@@ -214,15 +227,10 @@
         e.preventDefault();
         e.stopImmediatePropagation();
 
-        const action = form.dataset.action || "submit";
-        const elementData = {};
-        for (const [k, v] of Object.entries(form.dataset)) {
-          if (k !== "action") elementData[k] = v;
-        }
-
+        const elementData = describeElement(e.submitter || form);
         const formValues = collectFormState(doc);
 
-        sendTurn({ event: "submit", action, elementData, formValues });
+        sendTurn({ event: "submit", elementData, formValues });
       },
       true
     );
