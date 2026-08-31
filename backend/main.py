@@ -15,107 +15,50 @@ OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:3b")
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
-INTENT_SYSTEM_PROMPT = """You are the intent phase of a four-phase live UI generator. You write NO
-HTML, CSS, or JS, and you don't decide what happens next -- you only describe what the user was
-trying to do, for the planning phase after you to act on.
-
-Each request gives you:
-- SUMMARY OF CURRENT SCREEN: a plain-text description of what's shown right now, written after the
-  last screen was generated (empty if nothing yet).
-- CURRENT HTML: the actual markup on screen right now (empty if nothing yet) -- use it only to
-  resolve details the summary leaves out (exact wording, structure), not as something to plan
-  around.
-- ACTION: the single UI event the user just triggered, as JSON, one of:
-    {"event": "start", "concept": "<what the app should be>"}
-    {"event": "click", "action": "<data-action value, or \"navigate\" for a plain link>", "elementData": {...}, "formValues": {...}}
-    {"event": "submit", "action": "<the form's data-action, or \"submit\">", "elementData": {...}, "formValues": {...}}
-
-  elementData: the element's data-* attributes (a link also gets {href, linkText}).
-  formValues: every input/select/textarea's real current state, plus every aria-pressed toggle
-  button's on/off state, all as of the moment of the action (the browser's live state), keyed by
-  name (or id) -- checkboxes and toggle buttons true/false, a radio group its selected value or
-  null, multi-select an array, else the string value. Always accurate -- trust it completely.
+INTENT_SYSTEM_PROMPT = """
+Given:
+- SUMMARY OF CURRENT SCREEN: a plain-text description of what's shown right now (empty if nothing yet).
+- CURRENT HTML: the actual markup on screen right now (empty if nothing yet) -- use it to
+  resolve details the summary leaves out (exact wording, structure).
+- ACTION: the single UI event the user just triggered, as JSON.
+- elementData
 
 Write a short plain-text statement of the user's intent: what they were trying to accomplish with
-this action and what they now expect to see, grounded in the actual data they entered (formValues)
-and the actual thing they interacted with (elementData). For a "start" event, the intent is simply
-to begin using the described concept.
+this action, grounded in the actual data they entered (formValues) and the actual thing they interacted with (elementData).
+For a "start" event, the intent is simply to generate the described concept.
 
-Output ONLY the intent statement, a sentence or two. No HTML, no code fences, no commentary about
-this task itself.
+Output ONLY the intent statement, a sentence or two.
 """
 
-PLAN_SYSTEM_PROMPT = """You are the planning phase of a four-phase live UI generator. A separate model
-will take your plan and turn it into HTML -- you write NO HTML, CSS, or JS yourself, only the plan.
+PLAN_SYSTEM_PROMPT = """Given:
+- SUMMARY OF CURRENT SCREEN: a plain-text description of what's shown right now.
+- USER INTENT: a plain-text statement of what the user was trying to do with their last action.
 
-Each request gives you:
-- SUMMARY OF CURRENT SCREEN: a plain-text description of what's shown right now, written after the
-  last screen was generated (empty if nothing yet).
-- USER INTENT: a plain-text statement, written by an earlier phase, of what the user was trying to
-  do with their last action and what they now expect to see.
+Decide what screen should result from the user's intent actually being satisfied.
 
-You do not see the current screen's actual HTML, only its summary -- treat the summary as a
-description of a screen the user is looking at that you're deciding how to replace, not as
-existing material to reuse or preserve. Nothing about it is fixed just because it happened before.
-
-Decide what screen should result from the user's intent actually being satisfied. Be creative and
-commit to fully realized, specific content -- real-sounding titles, names, numbers, descriptions --
-that reads like an actual website, not a mockup. ABSOLUTELY NO PLACEHOLDER TEXT, "Result
-1"/"Lorem ipsum"-style filler, "searching..."/loading/pending states, or empty stubs left for a
-future turn. Decide the final, fully populated result yourself, right now.
-
-Write a plain-text plan (no HTML, no code fences) covering:
-- What this screen/state is and why it follows from the user's intent.
-- The actual content to show, spelled out concretely -- real titles, numbers, names, copy, not
-  categories or placeholders.
-- Every interactive element the next turn will need: what it is, its exact label/text, and what
-  should happen when it's triggered (this becomes a data-action name and, for inputs, a name
-  attribute).
-- Visual/identity notes worth carrying forward from the summary, if any, including replicating a
-  real product/site's actual look (colors, logo, layout, chrome) if the concept names one.
+Write a plain-text plan covering:
+- What this screen/state is.
+- The actual content to show.
 
 Output ONLY the plan. No HTML, no commentary about this task itself.
 """
 
-GENERATE_SYSTEM_PROMPT = """You render a single-page app live, as ONE COMPLETE HTML DOCUMENT, loaded
-into an <iframe> that fills the viewport.
+GENERATE_SYSTEM_PROMPT = """You render a single-page app live, as ONE COMPLETE HTML DOCUMENT.
 
-You are the generation phase of a four-phase pipeline: an earlier phase already decided what
-should appear next and wrote it up as the PLAN below. Implement that plan faithfully -- don't
-invent different content or second-guess its decisions, just turn it into good HTML/CSS/JS.
-
-Reply with ONLY the raw HTML document to load into the iframe:
+Reply with ONLY the raw HTML document:
 - Full document -- start with <!DOCTYPE html> and include <html>, <head> (with <title> and any
   <meta>/<style> you need), and <body>. No code fences, no commentary.
-- data-action="..." on anything (besides plain links) that should trigger the next step, matching
-  what the plan calls for.
-- name="..." on any input/select/textarea whose value matters later.
-- For a toggle-style button whose on/off state matters later (a "liked" state, an active filter
-  chip, a pressed icon button) and that isn't a real checkbox, give it name="..." and
-  aria-pressed="true" or "false" reflecting its current state -- this round-trips like a checkbox.
 - Design full-height/full-width -- the document fills the whole viewport (e.g. html, body { height:
   100%; margin: 0; }).
 - Make it look genuinely good: real CSS -- typography, color, spacing, flexbox/grid, transitions.
-- Use real <img> tags: link real URLs you believe exist for logos/photos, or
-  <img src="https://picsum.photos/<w>/<h>?random=<n>"> for generic filler.
-- Never fetch()/XHR a real external API -- no backend exists for that. Write all data
-  directly into the HTML/JS yourself.
+- Use real <img> tags: link real URLs you believe exist for logos/photos.
 - <script> runs normally in the document -- DOMContentLoaded/window.onload fire for real, so it's
-  fine to use them. Don't use window.location/window.open.
+  fine to use them.
 """
 
-SUMMARY_SYSTEM_PROMPT = """You are the summary phase of a four-phase live UI generator. You just
-receive a full HTML document (the one currently loaded into the app's iframe) and describe it in
-plain text for the NEXT turn's intent and planning phases, which will decide what happens after the
-user's next interaction -- they will NOT see this HTML, only your summary. You write NO HTML, CSS,
-or JS yourself.
-
-Write a concise plain-text summary (no HTML, no code fences) covering:
+SUMMARY_SYSTEM_PROMPT = """Write a concise plain-text summary (no HTML, no code fences) covering:
 - What screen/state this is and its purpose.
-- The concrete content actually shown -- real titles, numbers, names, copy -- summarized rather
-  than quoted in full, unless the exact wording matters for a future decision.
-- Every interactive element present: its label/text, its data-action (or "navigate" for links),
-  and any name="..." attributes whose current/possible values might matter later.
+- The concrete content actually shown.
 - Layout/visual identity worth remembering (theme, colors, whether it replicates a real product's
   look).
 
