@@ -9,6 +9,15 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 FENCE_RE = re.compile(r"^\s*```[a-zA-Z0-9]*\n?|\n?```\s*$")
+# Models sometimes preface or follow the document with commentary ("Here's the HTML:", or
+# notes after the closing tag) despite being told not to. Slice out everything before the
+# first <!doctype>/<html> and after the last </html> rather than relying on that being followed.
+DOCUMENT_RE = re.compile(r"<(?:!doctype|html)\b.*</html>", re.IGNORECASE | re.DOTALL)
+
+
+def strip_stray_output(html: str) -> str:
+    match = DOCUMENT_RE.search(html)
+    return match.group(0) if match else html
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 # MODEL = os.environ.get("OLLAMA_MODEL", "gemma3:4b")
@@ -189,7 +198,7 @@ async def generate(req: GenerateRequest):
             # Buffered rather than streamed piece-by-piece: models often wrap
             # fragments in ```html ... ``` fences, which can only be stripped
             # once the full response is in hand.
-            html = FENCE_RE.sub("", "".join(parts))
+            html = strip_stray_output(FENCE_RE.sub("", "".join(parts)))
             yield json.dumps({"phase": "html", "done": True, "text": html}) + "\n"
 
             summary_messages = [
