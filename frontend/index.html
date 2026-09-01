@@ -127,10 +127,15 @@
     }
   }
 
-  document.getElementById("start-btn").addEventListener("click", () => {
+  function startFromConcept() {
     const concept = document.getElementById("concept").value.trim() || "a simple demo app";
     bootstrapEl.style.display = "none";
     sendTurn({ event: "start", concept });
+  }
+
+  document.getElementById("start-btn").addEventListener("click", startFromConcept);
+  document.getElementById("concept").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") startFromConcept();
   });
 
   document.getElementById("reset-btn").addEventListener("click", () => location.reload());
