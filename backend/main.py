@@ -20,8 +20,10 @@ def strip_stray_output(html: str) -> str:
     return match.group(0) if match else html
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
-# MODEL = os.environ.get("OLLAMA_MODEL", "gemma3:4b")
-MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:3b")
+MODEL = os.environ.get("OLLAMA_MODEL", "gemma2:2b")
+# MODEL = os.environ.get("OLLAMA_MODEL", "deepseek-r1:1.5b")
+# MODEL = os.environ.get("OLLAMA_MODEL", "qwen3.5:4b")
+# MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:3b")
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
 INTENT_SYSTEM_PROMPT = """
@@ -136,7 +138,7 @@ async def generate(req: GenerateRequest):
                 # verbatim, so the intent is a static restatement of it rather than
                 # something an LLM needs to infer.
                 concept = last_action.get("concept", "")
-                intent_text = f"The user wants to generate an app based on the following concept: {concept}"
+                intent_text = f"The user wants an app based on the following concept: {concept}"
                 yield json.dumps({"phase": "intent", "done": False, "chars": len(intent_text)}) + "\n"
                 yield json.dumps({"phase": "intent", "done": True, "text": intent_text}) + "\n"
             else:
