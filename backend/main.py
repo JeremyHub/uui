@@ -24,16 +24,6 @@ OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:3b")
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
-START_INTENT_SYSTEM_PROMPT = """
-Given ACTION: a "start" event as JSON, carrying the concept the user typed for the app/screen they
-want generated.
-
-Write a short plain-text statement of the user's intent: what they want generated, grounded in the
-actual concept they described.
-
-Output ONLY the intent statement, a sentence or two.
-"""
-
 INTENT_SYSTEM_PROMPT = """
 Given:
 - SUMMARY OF CURRENT SCREEN: a plain-text description of what's shown right now.
@@ -142,10 +132,13 @@ async def generate(req: GenerateRequest):
         async with httpx.AsyncClient(timeout=None) as client:
             is_start = last_action.get("event") == "start"
             if is_start:
-                intent_messages = [
-                    {"role": "system", "content": START_INTENT_SYSTEM_PROMPT},
-                    {"role": "user", "content": f"ACTION:\n{action_json}"},
-                ]
+                # No LLM call needed -- the start event already carries the concept
+                # verbatim, so the intent is a static restatement of it rather than
+                # something an LLM needs to infer.
+                concept = last_action.get("concept", "")
+                intent_text = f"The user wants to generate an app based on the following concept: {concept}"
+                yield json.dumps({"phase": "intent", "done": False, "chars": len(intent_text)}) + "\n"
+                yield json.dumps({"phase": "intent", "done": True, "text": intent_text}) + "\n"
             else:
                 intent_messages = [
                     {"role": "system", "content": INTENT_SYSTEM_PROMPT},
@@ -154,16 +147,16 @@ async def generate(req: GenerateRequest):
                         "content": f"SUMMARY OF CURRENT SCREEN:\n{summary}\n\nCURRENT HTML:\n{current_html}\n\nACTION:\n{action_json}",
                     },
                 ]
-            parts = []
-            try:
-                async for piece in ollama_chat_stream(client, model, intent_messages):
-                    parts.append(piece)
-                    yield json.dumps({"phase": "intent", "done": False, "chars": sum(len(p) for p in parts)}) + "\n"
-            except OllamaError as e:
-                yield json.dumps({"phase": "error", "message": str(e)}) + "\n"
-                return
-            intent_text = FENCE_RE.sub("", "".join(parts)).strip()
-            yield json.dumps({"phase": "intent", "done": True, "text": intent_text}) + "\n"
+                parts = []
+                try:
+                    async for piece in ollama_chat_stream(client, model, intent_messages):
+                        parts.append(piece)
+                        yield json.dumps({"phase": "intent", "done": False, "chars": sum(len(p) for p in parts)}) + "\n"
+                except OllamaError as e:
+                    yield json.dumps({"phase": "error", "message": str(e)}) + "\n"
+                    return
+                intent_text = FENCE_RE.sub("", "".join(parts)).strip()
+                yield json.dumps({"phase": "intent", "done": True, "text": intent_text}) + "\n"
 
             plan_messages = [
                 {"role": "system", "content": PLAN_SYSTEM_PROMPT},
