@@ -206,18 +206,29 @@ async def turn(req: Turn):
     return StreamingResponse(stream(), media_type="application/x-ndjson")
 
 
+TRAILING_JUNK_RE = re.compile(r"(?:\s|`{3,}[a-zA-Z0-9]*)+$")
+# Enough to hold back a closing fence and its surrounding whitespace.
+TAIL_HOLDBACK = 16
+
+
 async def run_shell(client, req: Turn):
-    """Pass the document through as it is generated, so the iframe paints progressively."""
+    """Pass the document through as it is generated, so the iframe paints progressively.
+
+    Streaming into the parser is what buys a ~0.2s first paint instead of a ~20s one, but
+    it also means anything the model writes is on the page before it can be inspected. So
+    the two ends get held back: nothing is emitted until the document actually starts, and
+    the last few characters are withheld until the stream ends, because a model that wraps
+    its answer in ```html leaves the closing fence sitting visibly on the finished page.
+    """
     model = req.model or SHELL_MODEL
     user = f"APP CONCEPT:\n{req.concept or 'a simple demo app'}"
     yield {"type": "phase", "name": "building"}
 
     parts = []
+    pending = ""
     started_doc = False
     async for piece in ollama_stream(client, model, SHELL_SYSTEM_PROMPT, user, 3000, 0.7):
         parts.append(piece)
-        # Hold back until the real document starts, so any "Here's the HTML:" preamble
-        # never reaches the iframe's parser.
         if not started_doc:
             joined = "".join(parts)
             lower = joined.lower()
@@ -228,11 +239,20 @@ async def run_shell(client, req: Turn):
             if idx == -1:
                 continue
             started_doc = True
-            yield {"type": "screen_delta", "text": joined[idx:]}
-            continue
-        yield {"type": "screen_delta", "text": piece}
+            pending = joined[idx:]
+        else:
+            pending += piece
+        if len(pending) > TAIL_HOLDBACK:
+            yield {"type": "screen_delta", "text": pending[:-TAIL_HOLDBACK]}
+            pending = pending[-TAIL_HOLDBACK:]
 
     full = "".join(parts)
+    if not started_doc:
+        # The model ignored the format entirely. Better to show whatever it said than
+        # to leave a blank screen with no explanation.
+        pending = f"<!DOCTYPE html><html><body><section data-region=\"main\">{full}</section></body></html>"
+    yield {"type": "screen_delta", "text": TRAILING_JUNK_RE.sub("", pending)}
+
     match = DOCUMENT_RE.search(full)
     yield {"type": "screen_end", "html": match.group(0) if match else full}
 
