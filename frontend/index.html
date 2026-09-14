@@ -10,13 +10,16 @@
     display: flex; flex-direction: column; height: 100vh; overflow: hidden;
   }
   #topbar, #bootstrap, #status { flex: 0 0 auto; padding: 8px 16px; box-sizing: border-box; }
-  #topbar { display: flex; justify-content: space-between; align-items: center; padding-bottom: 0; }
+  #topbar { display: flex; justify-content: space-between; align-items: center; padding-bottom: 0; gap: 12px; }
   #topbar h3 { margin: 8px 0; }
+  #topbar label { font-size: 12px; color: #666; display: flex; align-items: center; gap: 4px; }
   #topbar button { font-size: 12px; }
   #bootstrap { display: flex; gap: 8px; }
   #bootstrap input { flex: 1; padding: 8px; font-size: 14px; }
   #bootstrap button { padding: 8px 16px; }
-  #status { font-size: 12px; color: #888; min-height: 16px; padding-top: 0; padding-bottom: 0; }
+  #status { font-size: 12px; color: #888; min-height: 16px; padding-top: 0; padding-bottom: 0;
+            display: flex; gap: 10px; align-items: center; }
+  #status .hit { color: #0a7; font-weight: 600; }
   #app { flex: 1 1 auto; min-height: 0; display: block; width: 100%; border: 0; border-top: 1px solid #ddd; }
   details { flex: 0 0 auto; font-size: 12px; padding: 4px 16px; }
   #transcript { background: #f6f6f6; padding: 8px; max-height: 200px; overflow: auto; white-space: pre-wrap; }
@@ -26,6 +29,7 @@
 
 <div id="topbar">
   <h3>UUI</h3>
+  <label><input type="checkbox" id="speculate" checked> predict next click</label>
   <button id="reset-btn">reset</button>
 </div>
 
@@ -35,7 +39,7 @@
 </div>
 
 <div id="status"></div>
-<iframe id="app" sandbox="allow-scripts allow-same-origin allow-forms"></iframe>
+<iframe id="app" src="about:blank" sandbox="allow-scripts allow-same-origin allow-forms"></iframe>
 
 <details>
   <summary>transcript (debug)</summary>
@@ -43,214 +47,586 @@
 </details>
 
 <script>
-  let currentHtml = "";              // exactly what's on screen right now
-  let lastSummary = "";              // prose description of currentHtml, from the summary phase
-  const actions = [];                // full event log, in-memory only
-  const appEl = document.getElementById("app");
-  const statusEl = document.getElementById("status");
-  const transcriptEl = document.getElementById("transcript");
-  const bootstrapEl = document.getElementById("bootstrap");
+// ---------------------------------------------------------------------------
+// UUI frontend.
+//
+// The model no longer rewrites the whole page every turn. The first turn streams a
+// complete document (parsed into the iframe as it arrives, so it paints while it is
+// still being written); every turn after that asks only for the <section data-region>
+// blocks that actually change, and each one is swapped in the moment it finishes.
+//
+// Three things that used to cost a model call each are now free: the screen summary is
+// read straight off the live DOM, purely local interactions run in the page's own JS
+// without a round trip at all, and the likely next click is generated during the idle
+// time right after a turn settles, so clicking it is instant.
+// ---------------------------------------------------------------------------
 
-  function renderTranscript() {
-    transcriptEl.textContent = JSON.stringify({ currentHtml, lastSummary, actions }, null, 2);
+const appEl = document.getElementById("app");
+const statusEl = document.getElementById("status");
+const transcriptEl = document.getElementById("transcript");
+const bootstrapEl = document.getElementById("bootstrap");
+const speculateEl = document.getElementById("speculate");
+
+const delegated = new WeakSet();   // documents whose click/submit delegation is live
+let concept = "";
+const recent = [];            // one-line history, last few turns
+const log = [];               // debug transcript
+let busy = false;
+
+function renderTranscript() {
+  transcriptEl.textContent = JSON.stringify({ concept, recent, log: log.slice(-12) }, null, 2);
+}
+
+// --- status -----------------------------------------------------------------
+
+let timerId = null, timerStart = 0;
+function setStatus(text, extra = "") {
+  statusEl.innerHTML = "";
+  if (text) statusEl.append(text);
+  if (extra) {
+    statusEl.append(" \u00b7 ");
+    const span = document.createElement("span");
+    span.className = "hit";
+    span.textContent = extra;
+    statusEl.append(span);
   }
+}
+let timerLabel = "";
+function startTimer(label) {
+  timerLabel = label;
+  timerStart = performance.now();
+  clearInterval(timerId);
+  timerId = setInterval(() => {
+    setStatus(`${timerLabel} ${((performance.now() - timerStart) / 1000).toFixed(1)}s`);
+  }, 100);
+  setStatus(`${label} 0.0s`);
+}
+function stopTimer(suffix = "") {
+  clearInterval(timerId);
+  timerId = null;
+  const secs = ((performance.now() - timerStart) / 1000).toFixed(1);
+  setStatus(`${secs}s`, suffix);
+  return Number(secs);
+}
 
-  // Backend runs four phases per turn: "intent" (given the last summary, the raw current
-  // HTML, and the action just taken, describe what the user was trying to do), "plan"
-  // (given the last summary and that intent, decide what happens next), "html" (implement
-  // that plan), then "summary" (describe what the html phase actually produced, in prose,
-  // so next turn's intent/plan phases read that instead of the raw HTML -- otherwise
-  // planning tends to treat old markup as something to preserve rather than a screen it's
-  // free to fully replace). All four stream as NDJSON lines.
-  async function sendTurn(event) {
-    actions.push(event);
-    renderTranscript();
-    statusEl.textContent = "interpreting...";
+// --- reading the live screen ------------------------------------------------
 
-    const res = await fetch("/generate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ current_html: currentHtml, summary: lastSummary, actions }),
-    });
+// Stand-in for the old LLM summary phase, and for the raw-HTML dump before that.
+// Read straight off the live DOM, so it costs no model call and cannot drift from what
+// is on screen -- and unlike a prose summary it carries the markup and class names the
+// patch has to match. The backend compacts it before it reaches the prompt.
+function buildScreen(doc) {
+  const regions = [...doc.querySelectorAll("[data-region]")].map((el) => ({
+    id: el.getAttribute("data-region"),
+    html: nestedRegionsElided(el),
+  }));
+  const styles = [...doc.querySelectorAll("style")].map((s) => s.textContent).join("\n");
+  return { regions, styles };
+}
 
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = "";
+// A model is free to nest regions even though ensureRegions never creates nesting. When
+// it does, the parent must not repeat what the children already send: stand a marker in
+// for each nested region so the parent's own content stays addressable without the
+// prompt carrying that subtree twice.
+function nestedRegionsElided(el) {
+  const nested = el.querySelectorAll("[data-region]");
+  if (!nested.length) return el.innerHTML;
+  const clone = el.cloneNode(true);
+  clone.querySelectorAll("[data-region]").forEach((child) => {
+    child.replaceWith(
+      el.ownerDocument.createComment(` region ${child.getAttribute("data-region")}, sent separately `)
+    );
+  });
+  return clone.innerHTML;
+}
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
+function collectFormState(container) {
+  const state = {};
+  container.querySelectorAll("input, select, textarea").forEach((field) => {
+    const key = field.name || field.id;
+    if (!key) return;
+    if (field.type === "checkbox") state[key] = field.checked;
+    else if (field.type === "radio") {
+      if (field.checked) state[key] = field.value;
+      else if (!(key in state)) state[key] = null;
+    } else if (field.tagName === "SELECT" && field.multiple) {
+      state[key] = Array.from(field.selectedOptions).map((o) => o.value);
+    } else state[key] = field.value;
+  });
+  container.querySelectorAll("[aria-pressed]").forEach((el) => {
+    const key = el.name || el.id;
+    if (key) state[key] = el.getAttribute("aria-pressed") === "true";
+  });
+  return state;
+}
 
-      let nl;
-      while ((nl = buf.indexOf("\n")) !== -1) {
-        const line = buf.slice(0, nl);
-        buf = buf.slice(nl + 1);
-        if (!line) continue;
-        const msg = JSON.parse(line);
+function describeElement(el) {
+  const data = { ...el.dataset };
+  const region = el.closest("[data-region]");
+  return {
+    tag: el.tagName.toLowerCase(),
+    text: el.textContent.trim().slice(0, 200),
+    id: el.id || undefined,
+    name: el.name || undefined,
+    href: el.tagName === "A" ? el.getAttribute("href") : undefined,
+    type: el.type || undefined,
+    inRegion: region ? region.getAttribute("data-region") : undefined,
+    ...(Object.keys(data).length ? { data } : {}),
+  };
+}
 
-        if (msg.phase === "intent" && !msg.done) {
-          statusEl.textContent = `interpreting... (${msg.chars} chars)`;
-        } else if (msg.phase === "intent" && msg.done) {
-          event.intent = msg.text;         // recorded on the timeline entry for the transcript
-          renderTranscript();
-          statusEl.textContent = "planning...";
-        } else if (msg.phase === "plan" && !msg.done) {
-          statusEl.textContent = `planning... (${msg.chars} chars)`;
-        } else if (msg.phase === "plan" && msg.done) {
-          event.plan = msg.text;           // recorded on the timeline entry for the transcript
-          renderTranscript();
-          statusEl.textContent = "generating...";
-        } else if (msg.phase === "html" && !msg.done) {
-          statusEl.textContent = `generating... (${msg.chars} chars)`;
-        } else if (msg.phase === "html" && msg.done) {
-          // Swap the iframe as soon as the document is complete -- don't make the user
-          // wait through the summary phase too before seeing the new screen.
-          currentHtml = msg.text;
-          appEl.srcdoc = currentHtml;   // NOTE: intentionally unsanitized, by design
-          renderTranscript();
-          statusEl.textContent = "summarizing...";
-        } else if (msg.phase === "summary" && !msg.done) {
-          statusEl.textContent = `summarizing... (${msg.chars} chars)`;
-        } else if (msg.phase === "summary" && msg.done) {
-          lastSummary = msg.text;
-          event.summary = msg.text;        // recorded on the timeline entry for the transcript
-          renderTranscript();
-          statusEl.textContent = "";
-        } else if (msg.phase === "error") {
-          currentHtml = `<!doctype html><html><body><pre style="color:red; white-space:pre-wrap;">${msg.message}</pre></body></html>`;
-          appEl.srcdoc = currentHtml;
-          renderTranscript();
-          statusEl.textContent = "";
-        }
-      }
+// --- applying model output --------------------------------------------------
+
+// innerHTML never runs <script>, so scripts in a freshly patched region are re-created
+// as real nodes. Without this, a region that ships its own local interactivity would
+// render but sit dead.
+function runScripts(root, doc) {
+  root.querySelectorAll("script").forEach((old) => {
+    const s = doc.createElement("script");
+    for (const a of old.attributes) s.setAttribute(a.name, a.value);
+    s.textContent = old.textContent;
+    old.replaceWith(s);
+  });
+}
+
+// Models reliably tag most blocks and then quietly skip one -- a bare <header> whose
+// id they only mention in a CSS selector -- and they habitually wrap the whole page in
+// a single <div class="container">. Either leaves content sitting outside any region,
+// where it can never be updated. So: find the element whose children are the real
+// top-level blocks, then backfill an id onto every one of them that lacks it.
+// Which element's children are the real top-level blocks.
+//
+// If the model tagged regions at all, believe it: the host is wherever it put the most
+// of them, even if that is a couple of wrappers deep. Picking a different level would
+// strip its ids and replace good names like "recipe-list" with "block-2". Only when
+// there are no regions at all does this fall back to descending through wrapper divs.
+function regionHost(doc) {
+  const tagged = [...doc.querySelectorAll("[data-region]")];
+  if (tagged.length) {
+    const counts = new Map();
+    for (const el of tagged) {
+      if (el.parentElement) counts.set(el.parentElement, (counts.get(el.parentElement) || 0) + 1);
     }
+    return [...counts].sort((a, b) => b[1] - a[1])[0][0];
   }
-
-  function startFromConcept() {
-    const concept = document.getElementById("concept").value.trim() || "a simple demo app";
-    bootstrapEl.style.display = "none";
-    sendTurn({ event: "start", concept });
+  let host = doc.body;
+  while (true) {
+    const kids = [...host.children].filter((c) => !["SCRIPT", "STYLE"].includes(c.tagName));
+    if (kids.length !== 1 || !kids[0].children.length) return host;
+    host = kids[0];
   }
+}
 
-  document.getElementById("start-btn").addEventListener("click", startFromConcept);
-  document.getElementById("concept").addEventListener("keydown", (e) => {
-    if (e.key === "Enter") startFromConcept();
+function ensureRegions(doc) {
+  const host = regionHost(doc);
+
+  // Regions are top-level blocks, full stop. Told to tag "every top-level block", models
+  // will happily tag every recipe card and every card's info panel too -- one page came
+  // back with thirty regions, which puts the whole document in the prompt again and
+  // undoes the entire point. Only direct children of the host stay addressable.
+  [...doc.querySelectorAll("[data-region]")].forEach((el) => {
+    if (el.parentElement !== host) el.removeAttribute("data-region");
   });
 
-  document.getElementById("reset-btn").addEventListener("click", () => location.reload());
+  const used = new Set(
+    [...doc.querySelectorAll("[data-region]")].map((el) => el.getAttribute("data-region"))
+  );
 
-  // Deterministically read every form control's real state -- checkboxes/radios need
-  // .checked, not .value (which stays truthy even when unchecked). Also picks up
-  // aria-pressed toggle buttons, since a toggle-style button (e.g. a "liked" state, an
-  // active filter chip) has nowhere else to keep its on/off state across a hop.
-  function collectFormState(container) {
-    const state = {};
-    container.querySelectorAll("input, select, textarea").forEach((field) => {
-      const key = field.name || field.id;
-      if (!key) return;
-      if (field.type === "checkbox") {
-        state[key] = field.checked;
-      } else if (field.type === "radio") {
-        if (field.checked) state[key] = field.value;
-        else if (!(key in state)) state[key] = null;
-      } else if (field.tagName === "SELECT" && field.multiple) {
-        state[key] = Array.from(field.selectedOptions).map((o) => o.value);
-      } else {
-        state[key] = field.value;
-      }
+  // Tagging a block that already holds regions would nest them, and a nested region is
+  // worse than no region: its parent carries a duplicate of everything inside it, so
+  // every prompt pays for the same content twice and patching the parent silently
+  // destroys the children's ids. Descend into such a block and tag its children instead.
+  (function backfill(parent) {
+    [...parent.children].forEach((child, i) => {
+      if (child.tagName === "SCRIPT" || child.tagName === "STYLE") return;
+      if (child.hasAttribute("data-region")) return;
+      const guess = { HEADER: "header", NAV: "nav", FOOTER: "footer", MAIN: "main",
+                      ASIDE: "sidebar", FORM: "form" }[child.tagName] || `block-${i + 1}`;
+      let name = guess, n = 2;
+      while (used.has(name)) name = `${guess}-${n++}`;
+      used.add(name);
+      child.setAttribute("data-region", name);
     });
-    container.querySelectorAll("[aria-pressed]").forEach((el) => {
-      const key = el.name || el.id;
-      if (!key) return;
-      state[key] = el.getAttribute("aria-pressed") === "true";
-    });
-    return state;
-  }
+  })(host);
+}
 
-  // Describes whatever the user actually interacted with, generically -- no special
-  // attribute (like a data-action name) is required from the generated page. Tag, visible
-  // text, and real attributes give the intent phase enough to figure out what happened. Any
-  // data-* attributes the model did add still pass through as bonus context.
-  function describeElement(el) {
-    const data = { ...el.dataset };
-    return {
-      tag: el.tagName.toLowerCase(),
-      text: el.textContent.trim().slice(0, 200),
-      id: el.id || undefined,
-      name: el.name || undefined,
-      className: el.className || undefined,
-      href: el.tagName === "A" ? el.getAttribute("href") : undefined,
-      type: el.type || undefined,
-      ...(Object.keys(data).length ? { data } : {}),
+// Every small model tested invents local image paths ("cat1.jpg") no matter how firmly
+// the prompt forbids it, and a page full of broken-image icons reads as broken even when
+// the content is good. Repair it in the DOM instead of relying on the model: seed a real
+// photo from the alt text, so the picture is at least about the right subject.
+function repairImages(root, doc) {
+  root.querySelectorAll("img").forEach((img) => {
+    const fix = () => {
+      const seed = encodeURIComponent(
+        (img.alt || img.getAttribute("src") || "photo").split("/").pop()
+          .replace(/\.[a-z]+$/i, "").slice(0, 40) || "photo"
+      );
+      const replacement = `https://picsum.photos/seed/${seed}/600/400`;
+      if (img.getAttribute("src") !== replacement) img.src = replacement;
     };
+    // "seed/SLUG" is the literal example out of the prompt, copied verbatim -- it loads,
+    // but it is then the same photo for every such image, which reads as obviously wrong.
+    const src = img.getAttribute("src") || "";
+    if (!/^https?:/i.test(src) || /\/seed\/SLUG\b/.test(src)) fix();
+    else img.addEventListener("error", fix, { once: true });
+  });
+}
+
+function flash(el) {
+  el.animate(
+    [{ opacity: 0.35, transform: "translateY(3px)" }, { opacity: 1, transform: "none" }],
+    { duration: 220, easing: "ease-out" }
+  );
+}
+
+function applyRegion(doc, id, html) {
+  let target = doc.querySelector(`[data-region="${CSS.escape(id)}"]`);
+  if (!target) {
+    target = doc.createElement("section");
+    target.setAttribute("data-region", id);
+    (doc.querySelector("main") || doc.body).append(target);
   }
+  target.innerHTML = html;
+  repairImages(target, doc);
+  runScripts(target, doc);
+  flash(target);
+}
 
-  // Event delegation: deterministically captures clicks on every real interactive control
-  // (button, link, submit/button/reset input, role=button) inside the iframe's document --
-  // no matter what the model generated it as, no special markup required. Real links are
-  // intercepted rather than constrained -- the model can write authentic-looking hrefs
-  // freely; clicking one never actually navigates, it just asks the model to generate
-  // whatever should come next.
-  function attachDelegation(doc) {
-    // Capture phase + stopImmediatePropagation: generated documents sometimes attach their
-    // own listeners directly on the clicked element (e.g. real webpages tend to wire up
-    // window.location-driven "navigation" despite being told not to) -- those run before a
-    // bubble-phase listener ever would. Intercepting in the capture phase guarantees we see
-    // the event first and can kill it before any such handler executes.
-    doc.addEventListener(
-      "click",
-      (e) => {
-        const el = e.target.closest(
-          'button, a[href], input[type="submit"], input[type="button"], input[type="reset"], [role="button"]'
-        );
-        if (!el) return;
-        e.preventDefault();
-        e.stopImmediatePropagation();
+function applyScreen(doc, html) {
+  doc.body.innerHTML = html;
+  repairImages(doc.body, doc);
+  runScripts(doc.body, doc);
+  ensureRegions(doc);
+  flash(doc.body);
+}
 
-        const elementData = describeElement(el);
-        const formValues = collectFormState(doc);
+// --- talking to the backend -------------------------------------------------
 
-        sendTurn({ event: "click", elementData, formValues });
-      },
-      true
-    );
-
-    // Catch form submissions too -- including Enter-key submits, which never fire a click
-    // on any button at all and would otherwise bypass the delegation above entirely.
-    // e.submitter is the specific button that triggered the submit (or the form itself, for
-    // an implicit Enter-key submit with no button focused).
-    doc.addEventListener(
-      "submit",
-      (e) => {
-        const form = e.target.closest("form");
-        if (!form) return;
-        e.preventDefault();
-        e.stopImmediatePropagation();
-
-        const elementData = describeElement(e.submitter || form);
-        const formValues = collectFormState(doc);
-
-        sendTurn({ event: "submit", elementData, formValues });
-      },
-      true
-    );
+async function* streamTurn(payload, signal) {
+  const res = await fetch("/turn", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    signal,
+  });
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let nl;
+    while ((nl = buf.indexOf("\n")) !== -1) {
+      const line = buf.slice(0, nl);
+      buf = buf.slice(nl + 1);
+      if (line) yield JSON.parse(line);
+    }
   }
+}
 
-  // The iframe gets a whole new document every time we set srcdoc, so delegation has to be
-  // re-attached each time -- but waiting for the iframe's "load" event isn't good enough: it
-  // only fires once every resource (including the real external images the model is told to
-  // link) has finished loading, while the DOM is clickable much sooner. That leaves a window
-  // where a click can reach the browser's native, unintercepted handling -- e.g. a real link
-  // actually navigating away. Poll readyState instead so delegation attaches the moment the
-  // new document exists and is parsed, not once its images happen to finish.
-  let attachedDoc = null;
-  setInterval(() => {
-    const doc = appEl.contentDocument;
-    if (!doc || doc === attachedDoc || doc.readyState === "loading") return;
-    attachedDoc = doc;
-    attachDelegation(doc);
-  }, 20);
+// --- speculation ------------------------------------------------------------
+//
+// Ollama serializes work on one GPU, so a speculation that is still running would
+// delay a real click. Every speculation therefore gets an AbortController and is
+// killed the instant the user actually does something -- closing the connection
+// stops Ollama generating, so the GPU is free again immediately.
+
+const predictions = new Map();    // signature -> { events } once complete
+let specAbort = null;
+let specRun = 0;
+
+function signature(action) {
+  const e = action.elementData;
+  return JSON.stringify([action.event, e.tag, e.text, e.id, e.name, e.href, action.formValues]);
+}
+
+function cancelSpeculation() {
+  specRun++;
+  if (specAbort) { specAbort.abort(); specAbort = null; }
+}
+
+// Must agree with findControl about what counts as clickable. When this looked only for
+// a[href] and findControl accepted anything styled clickable, pages whose nav was bare
+// <a> tags predicted nothing at all -- every click on them was a cold turn.
+function speculationTargets(doc) {
+  const seen = new Set();
+  return allControls(doc)
+    .filter((el) => isClickable(el, doc))
+    .filter((el) => !isLocal(el))
+    .filter((el) => {
+      const text = el.textContent.trim();
+      if (seen.has(text)) return false;
+      seen.add(text);
+      return true;
+    })
+    .slice(0, 3);
+}
+
+async function speculate(doc) {
+  if (!speculateEl.checked) return;
+  const myRun = ++specRun;
+  const screen = buildScreen(doc);
+  const formValues = collectFormState(doc);
+
+  for (const el of speculationTargets(doc)) {
+    if (myRun !== specRun) return;
+    const action = { event: "click", elementData: describeElement(el), formValues };
+    const key = signature(action);
+    if (predictions.has(key)) continue;
+
+    specAbort = new AbortController();
+    const events = [];
+    try {
+      for await (const msg of streamTurn(
+        { concept, ...screen, action, recent, mode: "patch", speculative: true },
+        specAbort.signal
+      )) {
+        if (myRun !== specRun) return;
+        events.push(msg);
+      }
+      if (myRun === specRun && events.some((e) => e.type === "region" || e.type === "screen")) {
+        predictions.set(key, events);
+        setStatus("", `ready: ${predictions.size} predicted`);
+      }
+    } catch (e) {
+      if (e.name !== "AbortError") console.warn("speculation failed", e);
+      return;   // aborted, or the model errored -- either way stop predicting
+    } finally {
+      specAbort = null;
+    }
+  }
+}
+
+// --- turns ------------------------------------------------------------------
+
+function applyEvents(doc, events, actionLabel) {
+  let plan = "";
+  for (const msg of events) {
+    if (msg.type === "plan") plan = msg.text;
+    else if (msg.type === "region") applyRegion(doc, msg.id, msg.html);
+    else if (msg.type === "screen") applyScreen(doc, msg.html);
+    else if (msg.type === "error") {
+      applyRegion(doc, "error", `<pre style="color:#c00;white-space:pre-wrap">${msg.message}</pre>`);
+    }
+  }
+  if (plan) recent.push(`${actionLabel} -> ${plan}`);
+  return plan;
+}
+
+async function sendAction(action) {
+  if (busy) return;
+  busy = true;
+  cancelSpeculation();
+  const doc = appEl.contentDocument;
+  const label = `${action.event} "${(action.elementData.text || "").slice(0, 40)}"`;
+
+  const key = signature(action);
+  if (predictions.has(key)) {
+    // Already generated during the idle time after the last turn: no model call at all.
+    timerStart = performance.now();
+    const plan = applyEvents(doc, predictions.get(key), label);
+    predictions.clear();
+    stopTimer("instant (predicted)");
+    log.push({ action: label, plan, predicted: true });
+    renderTranscript();
+    busy = false;
+    speculate(doc);
+    return;
+  }
+  predictions.clear();
+
+  startTimer("updating");
+  const payload = { concept, ...buildScreen(doc), action, recent, mode: "patch" };
+  let plan = "", touched = [];
+  try {
+    for await (const msg of streamTurn(payload)) {
+      if (msg.type === "plan") { plan = msg.text; timerLabel = plan.slice(0, 80); }
+      else if (msg.type === "region") { applyRegion(doc, msg.id, msg.html); touched.push(msg.id); }
+      else if (msg.type === "screen") { applyScreen(doc, msg.html); touched.push("(whole screen)"); }
+      else if (msg.type === "error") {
+        applyRegion(doc, "error", `<pre style="color:#c00;white-space:pre-wrap">${msg.message}</pre>`);
+      }
+    }
+  } catch (e) {
+    setStatus(`failed: ${e.message}`);
+    busy = false;
+    return;
+  }
+  const secs = stopTimer(touched.length ? ` · changed ${touched.join(", ")}` : " · no change");
+  if (plan) recent.push(`${label} -> ${plan}`);
+  if (recent.length > 6) recent.splice(0, recent.length - 6);
+  log.push({ action: label, plan, touched, secs });
+  renderTranscript();
+  busy = false;
+  speculate(doc);
+}
+
+// The first turn is the only one that writes a whole document. It is streamed straight
+// into the iframe's parser rather than assigned to srcdoc at the end, so the page paints
+// top-down while the model is still generating the rest of it.
+async function startFromConcept() {
+  concept = document.getElementById("concept").value.trim() || "a simple demo app";
+  bootstrapEl.style.display = "none";
+  busy = true;
+  startTimer("building");
+
+  const doc = appEl.contentDocument;
+  // document.open() reuses the same document object but strips every listener on it,
+  // so the "already delegated" guard has to be cleared or delegation silently never
+  // re-attaches -- and every click that the generated page does not handle itself dies.
+  doc.open();
+  delegated.delete(doc);
+  attachDelegation(doc);
+
+  // Streaming the document into the parser means inline scripts run mid-parse, so a
+  // generated script that reaches for an element written later throws and the page
+  // silently loses the local interactivity that keeps it feeling instant. Models are
+  // asked to wait for DOMContentLoaded and mostly do not. Watch for a script error and,
+  // if one happened, run the scripts again once the document is complete.
+  let scriptFailed = false;
+  appEl.contentWindow.addEventListener("error", () => { scriptFailed = true; }, true);
+  let wrote = false;
+  try {
+    for await (const msg of streamTurn({ concept, mode: "shell", action: { event: "start", concept } })) {
+      if (msg.type === "screen_delta") { doc.write(msg.text); wrote = true; }
+      else if (msg.type === "error") doc.write(`<pre style="color:#c00">${msg.message}</pre>`);
+    }
+  } catch (e) {
+    doc.write(`<pre style="color:#c00">${e.message}</pre>`);
+  }
+  if (!wrote) doc.write("<p>the model produced nothing</p>");
+  doc.close();
+  try {
+    if (scriptFailed) runScripts(doc.body, doc);
+    ensureRegions(doc);
+    repairImages(doc.body, doc);
+  } catch (e) {
+    console.error("post-shell fixups failed", e);
+  }
+  const secs = stopTimer();
+  log.push({ action: "start", concept, secs });
+  renderTranscript();
+  busy = false;
+  speculate(doc);
+}
+
+// --- input capture ----------------------------------------------------------
+
+// data-local marks controls the generated page handles itself: they never leave the
+// page, which is what keeps toggles, tabs and filters instant instead of costing a
+// model call each. But models are loose with it -- they will mark a whole <nav> or
+// <footer> data-local and then write no handler for the links inside, which would leave
+// those links permanently dead. So treat it as a hint, not a promise: let the page have
+// its shot, and if nothing in the DOM actually changed, take the turn after all. A
+// control that works locally stays instant; one that does not still works.
+const LOCAL_GRACE_MS = 400;
+
+const REAL_CONTROLS =
+  'button, a[href], input[type="submit"], input[type="button"], input[type="reset"], [role="button"]';
+
+// Models do not limit themselves to <button> and <a href>. They write navs out of bare
+// <a> with no href, tabs out of <div class="tab">, rows out of <li> -- and style them as
+// clickable. Matching only real controls left every one of those permanently dead.
+//
+// But "any <a> or <li>" is too greedy the other way: a plain <li> in a summary list is
+// not a control, and treating it as one spends a model call on a click that meant
+// nothing. So the test is whether the page itself declares the thing clickable, either
+// with an explicit handler-ish attribute or with cursor:pointer in its own CSS.
+const CLICK_INTENT = "[onclick], [tabindex], [data-action], [data-tab], [data-filter]";
+// Anything a generated page might plausibly have meant as a control. Deliberately loose.
+const CONTROL_SELECTOR = `${REAL_CONTROLS}, ${CLICK_INTENT}, a, li,` +
+  ' [class*="tab"], [class*="btn"], [class*="button"], [class*="card"],' +
+  ' [class*="item"], [class*="chip"], [class*="nav"], [class*="option"]';
+
+function allControls(doc) {
+  const all = [...doc.querySelectorAll(CONTROL_SELECTOR)]
+    .filter((el) => el.textContent.trim() && el.getClientRects().length);
+  // Keep only leaf-most matches. A tab strip is usually <div class="tab-bar"> holding
+  // <div class="tab">, and the loose selector matches both -- but the container is not
+  // what anyone clicks, and offering it as a target means predicting a click whose
+  // "label" is every tab's text run together.
+  return all.filter((el) => !all.some((other) => other !== el && el.contains(other)));
+}
+
+// Whether the page itself says this is clickable -- a real control, an explicit handler
+// attribute, or cursor:pointer in its own CSS. Stricter than CONTROL_SELECTOR.
+function isClickable(el, doc) {
+  if (el.matches(REAL_CONTROLS) || el.matches(CLICK_INTENT)) return true;
+  return doc.defaultView.getComputedStyle(el).cursor === "pointer";
+}
+
+// The two callers want opposite things, so they get opposite thresholds.
+//
+// A click already happened: the user believed that thing was clickable, and a wasted
+// turn is far better than a control that does nothing forever. So accept loosely.
+// Speculation is a guess spending GPU nobody asked for, so it accepts strictly
+// (isClickable) -- otherwise it burns turns predicting clicks on summary list rows.
+function findControl(target, doc) {
+  const direct = target.closest(REAL_CONTROLS) || target.closest(CLICK_INTENT);
+  if (direct) return direct;
+  let el = target;
+  for (let depth = 0; el && el !== doc.body && depth < 4; el = el.parentElement, depth++) {
+    if (/^(INPUT|TEXTAREA|SELECT|LABEL|OPTION)$/.test(el.tagName)) return null;
+    if (el.matches(CONTROL_SELECTOR) || isClickable(el, doc)) return el;
+  }
+  return null;
+}
+
+function isLocal(el) {
+  return el.hasAttribute("data-local") || !!el.closest("[data-local]");
+}
+
+function attachDelegation(doc) {
+  if (delegated.has(doc)) return;
+  delegated.add(doc);
+  doc.addEventListener("click", (e) => {
+    const el = findControl(e.target, doc);
+    if (!el) return;
+    if (isLocal(el)) {
+      // Let the page's own handler run, but never let a real href navigate away.
+      if (el.tagName === "A") e.preventDefault();
+      const before = doc.body.innerHTML;
+      setTimeout(() => {
+        if (busy || doc.body.innerHTML !== before) return;
+        sendAction({ event: "click", elementData: describeElement(el), formValues: collectFormState(doc) });
+      }, LOCAL_GRACE_MS);
+      return;
+    }
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    sendAction({ event: "click", elementData: describeElement(el), formValues: collectFormState(doc) });
+  }, true);
+
+  doc.addEventListener("submit", (e) => {
+    const form = e.target.closest("form");
+    if (!form) return;
+    e.preventDefault();
+    if (isLocal(form)) return;
+    e.stopImmediatePropagation();
+    sendAction({
+      event: "submit",
+      elementData: describeElement(e.submitter || form),
+      formValues: collectFormState(doc),
+    });
+  }, true);
+
+  // Typing invalidates any prediction keyed on the old form values, and the user is
+  // clearly mid-thought, so stop burning GPU on guesses until they settle.
+  doc.addEventListener("input", () => { cancelSpeculation(); predictions.clear(); }, true);
+}
+
+// Fallback for any document this page did not open itself.
+setInterval(() => {
+  const doc = appEl.contentDocument;
+  if (doc && doc.readyState !== "loading") attachDelegation(doc);
+}, 50);
+
+document.getElementById("start-btn").addEventListener("click", startFromConcept);
+document.getElementById("concept").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") startFromConcept();
+});
+document.getElementById("reset-btn").addEventListener("click", () => location.reload());
 </script>
 
 </body>

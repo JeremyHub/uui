@@ -10,5 +10,10 @@ dependencies = [
     "httpx",
 ]
 
+[dependency-groups]
+# scripts/e2e.py drives the real frontend in Chrome; uses the system browser
+# (channel="chrome"), so no `playwright install` download is needed.
+dev = ["playwright"]
+
 [tool.uv]
 package = false
