@@ -65,11 +65,33 @@ first on this card, and the 4-7s reload costs more than any per-phase choice sav
 Override with `OLLAMA_MODEL`, or `UUI_SHELL_MODEL` / `UUI_PATCH_MODEL` per phase if you
 have the VRAM. Check `ollama ps` during a turn to confirm the PROCESSOR column says GPU.
 
-## Measuring
+## Testing
 
 ```
-uv run python3 scripts/bench.py       # server: time per turn, chars written, regions touched
-uv run python3 scripts/e2e.py         # browser: what a user actually feels (needs Chrome)
+uv run pytest                          # the whole suite, ~35s, no GPU needed
+```
+
+The suite talks to `tests/fake_ollama.py`, a stub that speaks Ollama's streaming chat
+protocol. There is no test mode and no fake flag in the app — it is the same server,
+pointed at something that answers like Ollama. That is what makes the failures testable:
+waiting for a real model to emit a truncated reply, a fenced reply, or one that would wipe
+the page means waiting for luck, while a stub just emits one.
+
+The browser tests observe from outside — counting POSTs to `/turn`, watching the iframe's
+HTML, waiting for both to go quiet. They never read the app's variables. An earlier version
+asserted on `busy`, `predictions.size` and `log[]`, which meant renaming a variable broke
+the suite and a green suite proved only that those variables still existed. What is asserted
+now — *did the screen change, did it cost a model call, how long did it take* — stays true
+across a rewrite, and is what a user would notice.
+
+## Measuring
+
+Correctness is the suite's job; these answer how fast it is with a real model.
+
+```
+uv run uvicorn backend.main:app --port 8765 &
+uv run python3 scripts/e2e.py         # browser: what a user feels, per turn
+uv run python3 scripts/bench.py       # server: chars written, regions touched
 uv run python3 scripts/baseline.py    # the old four-call pipeline, for comparison
 ```
 
@@ -87,16 +109,13 @@ in how well the model split the page up. Asked for 4-7 regions it usually compli
 page that comes back as one big region patches like the old design did, because it is the
 old design. Region granularity is the thing to watch when a session feels slow.
 
-Run both benchmarks, not one. `bench.py` only exercises the server, and everything that
-makes this fast lives in the frontend — streaming into the parser, swapping single
-regions, `data-local`, speculation. Three real bugs (a missing function, a frozen status
-bar, permanently dead links) were invisible to `bench.py` and obvious in `e2e.py`.
-
 ## Layout
 
 ```
-backend/main.py      /turn: shell and patch streams, the #region parser
-backend/prompts.py   the two prompt contracts
-backend/screen.py    compacting the live screen into a prompt
-frontend/index.html  iframe streaming, region swapping, delegation, speculation
+backend/main.py       /turn: shell and patch streams, the #region parser
+backend/prompts.py    the two prompt contracts
+backend/screen.py     compacting the live screen into a prompt
+frontend/index.html   iframe streaming, region swapping, delegation, speculation
+tests/fake_ollama.py  a stub that answers like Ollama
+tests/browser.py      observing the app from outside: calls made, screen changed
 ```

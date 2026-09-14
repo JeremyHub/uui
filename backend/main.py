@@ -275,11 +275,17 @@ def guard_screen(event: dict, req: Turn) -> dict:
     content that the model mislabelled, so treat it as one -- aimed at the biggest
     region, which is the main content area on essentially every generated page.
     """
-    if event["type"] != "screen" or 'data-region' in event["html"]:
+    if event["type"] != "screen" or "data-region" in event["html"]:
         return event
     if not req.regions:
         return event
-    biggest = max(req.regions, key=lambda r: len(r.get("html", "")))
+    # Never land it on the region holding the control that was just clicked. The biggest
+    # region on a page is often the navigation, and dropping an About page into the nav
+    # deletes every way of getting anywhere -- worse than the blank screen this guards
+    # against. Content the user asked for belongs somewhere other than the menu.
+    clicked_in = (req.action or {}).get("elementData", {}).get("inRegion")
+    candidates = [r for r in req.regions if r["id"] != clicked_in] or req.regions
+    biggest = max(candidates, key=lambda r: len(r.get("html", "")))
     return {"type": "region", "id": biggest["id"], "html": event["html"], "demoted": True}
 
 

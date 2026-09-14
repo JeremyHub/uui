@@ -14,11 +14,16 @@ app does with it.
 import json
 import re
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
 class FakeOllama:
-    def __init__(self):
+    def __init__(self, chunk_delay=0.0):
+        # A real model dribbles tokens out over seconds. Some behaviour only exists in
+        # that gap -- painting before the response ends, predicting during idle time,
+        # aborting a request mid-flight -- so the stub can be told to take its time.
+        self.chunk_delay = chunk_delay
         self.rules = []          # (predicate, reply text)
         self.default = "#plan nothing\n#end"
         self.fail_with = None    # set to make the stub answer the way Ollama reports errors
@@ -27,7 +32,11 @@ class FakeOllama:
         self._thread = None
 
     def on(self, match, reply):
-        """Reply with `reply` when `match` (a substring or predicate) fits the prompt."""
+        """Reply with `reply` when `match` (a substring or predicate) fits the prompt.
+
+        `reply` may be a callable, for when successive turns need to differ -- a stub
+        that answers identically every time makes "did the screen change?" unanswerable.
+        """
         test = match if callable(match) else (lambda text, m=match: m in text)
         self.rules.append((test, reply))
         return self
@@ -37,8 +46,8 @@ class FakeOllama:
         text = "\n".join(m.get("content", "") for m in payload.get("messages", []))
         for test, reply in self.rules:
             if test(text):
-                return reply
-        return self.default
+                return reply(text) if callable(reply) else reply
+        return self.default(text) if callable(self.default) else self.default
 
     @property
     def url(self):
@@ -50,6 +59,15 @@ class FakeOllama:
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *args):
                 pass
+
+            def handle_one_request(self):
+                # The app aborts speculation by dropping the connection, which is the
+                # point -- it frees the GPU immediately. That arrives here as a broken
+                # pipe, and it is normal traffic, not a failure worth a stack trace.
+                try:
+                    super().handle_one_request()
+                except (BrokenPipeError, ConnectionResetError):
+                    self.close_connection = True
 
             def do_POST(self):
                 body = self.rfile.read(int(self.headers["Content-Length"]))
@@ -67,11 +85,14 @@ class FakeOllama:
                 # Chunked the way a real model streams, so the app's incremental parsing
                 # is exercised rather than handed one tidy blob.
                 for chunk in re.findall(r".{1,24}", reply, re.DOTALL):
+                    if fake.chunk_delay:
+                        time.sleep(fake.chunk_delay)
                     self.wfile.write(
                         json.dumps({"message": {"content": chunk}, "done": False}).encode() + b"\n"
                     )
                     self.wfile.flush()
                 self.wfile.write(json.dumps({"message": {"content": ""}, "done": True}).encode() + b"\n")
+                self.aborted = False
 
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)

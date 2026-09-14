@@ -11,9 +11,13 @@ dependencies = [
 ]
 
 [dependency-groups]
-# scripts/e2e.py drives the real frontend in Chrome; uses the system browser
+# playwright drives the real frontend in Chrome and uses the system browser
 # (channel="chrome"), so no `playwright install` download is needed.
-dev = ["playwright"]
+dev = ["playwright", "pytest", "pytest-asyncio"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "strict"
+testpaths = ["tests"]
 
 [tool.uv]
 package = false

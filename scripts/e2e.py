@@ -1,137 +1,108 @@
-"""Drive the real app in a real browser and report what a user would actually feel.
+"""Measure the real app, with a real model, the way a person would experience it.
 
-scripts/bench.py measures the server; this measures the product. Everything that makes
-UUI fast lives in the frontend -- streaming the first document into the iframe's parser,
-swapping single regions, letting data-local controls run without a model call, spending
-idle time predicting the next click -- and none of it is exercised by hitting /turn.
-Three real bugs (a missing function, a frozen status bar, permanently dead links) were
-invisible to the server benchmark and obvious here.
+tests/ proves the app behaves correctly against a stubbed model in seconds. This is the
+other question: with an actual model on an actual GPU, how long does a turn take, and how
+often does the app avoid needing one at all.
 
-    uv run uvicorn backend.main:app --port 8000 &
-    uv run python3 scripts/e2e.py [--concept "..."]
+Like the tests, it observes from outside -- counting POSTs to /turn and watching the
+iframe's HTML -- so it keeps working across rewrites of the app's internals. The one thing
+it owns is its own idea of what a person would click, which is a model of the user, not of
+the app.
+
+    uv run uvicorn backend.main:app --port 8765 &
+    uv run python3 scripts/e2e.py [--concept "..."] [--turns 4]
 """
 
 import argparse
 import asyncio
-import json
-import time
+import sys
+from pathlib import Path
 
 from playwright.async_api import async_playwright
 
-# Ask the app itself what is clickable rather than guessing with a selector. Generated
-# pages build tabs out of <div> and navs out of hrefless <a>; a narrower selector here
-# reports "no controls on screen" for pages the app handles perfectly well.
-CLICKABLE_JS = """(() => {
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from tests.browser import Watcher, set_prediction  # noqa: E402
+
+# What a person would try to click, decided here rather than asked of the app. Leaf-most
+# matches only: a tab strip and each tab inside it both look clickable to a selector, but
+# only the tabs are what anyone aims at.
+CLICKABLE_JS = """() => {
   const d = document.getElementById('app').contentDocument;
-  return allControls(d).map(e => e.textContent.trim().slice(0, 40));
-})()"""
-CLICK_BY_TEXT_JS = """(text) => {
-  const d = document.getElementById('app').contentDocument;
-  const el = allControls(d).find(e => e.textContent.trim().slice(0, 40) === text);
-  if (el) el.click();
-  return !!el;
+  const looksClickable = (el) =>
+    el.matches('button, a, [role="button"], [onclick], input[type="submit"]') ||
+    d.defaultView.getComputedStyle(el).cursor === 'pointer';
+  const all = [...d.querySelectorAll('*')]
+    .filter((el) => el.textContent.trim() && el.getClientRects().length && looksClickable(el));
+  return all
+    .filter((el) => !all.some((other) => other !== el && el.contains(other)))
+    .map((el) => el.textContent.trim().replace(/\\s+/g, ' ').slice(0, 40));
 }"""
-# Compare region contents, not lengths: a local toggle usually flips a class without
-# changing a single character count, and calling that "nothing happened" hides the
-# zero-latency path that is the whole point of data-local.
-REGION_JS = (
-    "[...document.getElementById('app').contentDocument.querySelectorAll('[data-region]')]"
-    ".map(e => [e.getAttribute('data-region'), e.innerHTML])"
-)
+
+CLICK_JS = """(label) => {
+  const d = document.getElementById('app').contentDocument;
+  const hit = [...d.querySelectorAll('*')].find(
+    (el) => el.textContent.trim().replace(/\\s+/g, ' ').slice(0, 40) === label
+            && el.getClientRects().length
+            && !el.querySelector('*')?.textContent?.trim()
+  ) || [...d.querySelectorAll('*')].find(
+    (el) => el.textContent.trim().replace(/\\s+/g, ' ').slice(0, 40) === label
+  );
+  if (hit) hit.click();
+  return !!hit;
+}"""
 
 
-async def wait_idle(pg, limit=240):
-    """Settle means the app is idle -- including any data-local fallback turn, which
-    starts a beat after the click rather than on it."""
-    t0 = time.monotonic()
-    await asyncio.sleep(0.8)
-    while time.monotonic() - t0 < limit:
-        if not await pg.evaluate("busy"):
-            return time.monotonic() - t0
-        await asyncio.sleep(0.1)
-    return None
-
-
-async def run(concept, turns):
+async def run(url, concept, turns, predict):
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(channel="chrome", headless=True, args=["--no-sandbox"])
         page = await browser.new_page()
         errors = []
         page.on("pageerror", lambda e: errors.append(e.message))
+        watcher = Watcher(page)
 
-        await page.goto("http://localhost:8000/", wait_until="load")
+        await page.goto(url, wait_until="load")
+        await set_prediction(page, predict)
         await page.fill("#concept", concept)
-        await page.click("#start-btn")
-        secs = await wait_idle(page)
-        regions = dict(await page.evaluate(REGION_JS))
-        print(f"shell            {secs:6.1f}s   regions={list(regions)}")
+
+        first_paint = await watcher.time_to_change(lambda: page.click("#start-btn"), limit=180)
+        await watcher.settle(quiet=1.0, limit=300)
+        regions = await page.evaluate(
+            "[...document.getElementById('app').contentDocument"
+            ".querySelectorAll('[data-region]')].map(e => e.getAttribute('data-region'))"
+        )
+        print(f"first screen   settled, first paint {first_paint['seconds']:5.1f}s  "
+              f"regions={regions}")
         if len(regions) < 2:
-            print("  WARNING: fewer than two regions -- nothing to patch partially")
+            print("  WARNING: one region means every update rewrites the whole page")
 
-        times, hits = [], 0
-        turns_logged = await page.evaluate("log.length")
+        free, paid = [], []
         for i in range(turns):
-            controls = await page.evaluate(CLICKABLE_JS)
-            if not controls:
-                print("  no controls on screen -- nothing to click")
+            labels = await page.evaluate(CLICKABLE_JS)
+            if not labels:
+                print("  nothing on screen looks clickable")
                 break
-            label = controls[i % len(controls)]
-            predicted_before = await page.evaluate("predictions.size")
-            t0 = time.monotonic()
-            if not await page.evaluate(CLICK_BY_TEXT_JS, label):
-                print(f"  {label!r} vanished before it could be clicked")
-                continue
-            await wait_idle(page)
-            elapsed = time.monotonic() - t0
-            after = dict(await page.evaluate(REGION_JS))
-            changed = [k for k in after if regions.get(k) != after[k]]
-            entry = await page.evaluate("log[log.length-1]") or {}
-            took_turn = await page.evaluate("log.length") > turns_logged
-            turns_logged = await page.evaluate("log.length")
-            if entry.get("predicted"):
-                hits += 1
-            regions = after
-            if took_turn:
-                times.append(elapsed)
-            how = ("PREDICTED" if entry.get("predicted") else
-                   "model turn" if took_turn else
-                   "handled in-page, no model call" if changed else
-                   "DEAD CLICK -- nothing happened")
-            print(f"  click {label[:26]!r:28} {elapsed:6.1f}s  changed={changed or ['nothing']}"
-                  f"  [{how}]  (cache had {predicted_before})")
-            if entry.get("plan"):
-                print(f"{'':36} plan: {entry['plan'][:78]}")
+            label = labels[i % len(labels)]
+            result = await watcher.turns_taken(lambda: page.evaluate(CLICK_JS, label), quiet=1.0)
+            (paid if result["calls"] else free).append(result["seconds"])
+            cost = f"{result['calls']} model call" + ("s" if result["calls"] != 1 else "")
+            note = "" if result["changed"] else "  NOTHING CHANGED"
+            print(f"  click {label[:30]!r:32} {result['seconds']:5.1f}s  {cost}{note}")
 
-        # Idle time is when predictions get made, so give it some.
-        await wait_idle(page)
-        for _ in range(90):
-            if await page.evaluate("predictions.size"):
-                break
-            await asyncio.sleep(1)
-        cached = await page.evaluate("predictions.size")
-        print(f"\npredictions cached while idle: {cached}")
-        if cached:
-            target = json.loads((await page.evaluate("[...predictions.keys()]"))[0])[2]
-            if await page.evaluate(CLICK_BY_TEXT_JS, target[:40]):
-                t0 = time.monotonic()
-                await wait_idle(page)
-                entry = await page.evaluate("log[log.length-1]") or {}
-                print(f"predicted click {target[:26]!r}: {time.monotonic() - t0:.2f}s "
-                      f"predicted={bool(entry.get('predicted'))}")
-
-        if times:
-            print(f"\nmodel turns: mean {sum(times)/len(times):.1f}s over {len(times)}, "
-                  f"{hits} served from prediction")
-        print("page errors:", errors[:5] or "none")
+        if paid:
+            print(f"\nturns that asked the model: {len(paid)}, mean {sum(paid)/len(paid):.1f}s")
+        if free:
+            print(f"turns handled without the model: {len(free)}, mean {sum(free)/len(free):.1f}s")
+        print("page errors:", errors[:3] or "none")
         await browser.close()
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--concept", default="a todo list with add, complete and delete buttons")
+    ap.add_argument("--url", default="http://localhost:8765/")
+    ap.add_argument("--concept", default="a recipe browser with category tabs and a search box")
     ap.add_argument("--turns", type=int, default=4)
-    args = ap.parse_args()
-    asyncio.run(run(args.concept, args.turns))
+    ap.add_argument("--predict", action="store_true", help="leave next-click guessing on")
+    asyncio.run(run(**vars(ap.parse_args())))
 
 
 if __name__ == "__main__":
