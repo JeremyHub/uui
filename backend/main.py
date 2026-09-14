@@ -201,6 +201,15 @@ async def turn(req: Turn):
             except OllamaError as e:
                 yield json.dumps({"type": "error", "message": str(e)}) + "\n"
                 return
+            except httpx.HTTPError as e:
+                # Ollama not running is the single most likely failure here, and letting
+                # the connection error escape gives the browser a truncated stream with
+                # nothing to show for it. Say what happened instead.
+                yield json.dumps({
+                    "type": "error",
+                    "message": f"Could not reach Ollama at {OLLAMA_URL} ({e.__class__.__name__}). Is it running?",
+                }) + "\n"
+                return
         yield json.dumps({"type": "done", "elapsed": round(time.monotonic() - started, 2)}) + "\n"
 
     return StreamingResponse(stream(), media_type="application/x-ndjson")
