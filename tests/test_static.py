@@ -17,8 +17,14 @@ import pytest
 import pytest_asyncio
 
 FRONTEND = Path(__file__).resolve().parent.parent / "frontend"
-# Headless Chrome reports navigator.gpu but hands back no adapter unless asked nicely.
-GPU_ARGS = ["--no-sandbox", "--enable-unsafe-webgpu", "--enable-features=Vulkan"]
+# Headless Chrome hands back no WebGPU adapter unless asked nicely, and without
+# --use-angle=vulkan the one it hands back is SwiftShader, its CPU rasterizer. That still
+# satisfies these tests, but asking for the real thing keeps them representative of the
+# device someone would actually run this on.
+GPU_ARGS = [
+    "--no-sandbox", "--enable-unsafe-webgpu", "--use-angle=vulkan",
+    "--enable-features=Vulkan", "--ignore-gpu-blocklist",
+]
 
 
 @pytest.fixture(scope="module")
@@ -58,7 +64,12 @@ async def open_site(url, args):
         await page.wait_for_function(
             "document.getElementById('engine').options.length > 0", timeout=20000,
         )
-        await page.wait_for_timeout(1200)
+        # The in-tab model list comes from a CDN, so wait for it to arrive rather than
+        # guessing how long that takes -- a fixed pause passes on a quiet machine and
+        # fails on a busy one.
+        await page.wait_for_function(
+            "!document.getElementById('model').disabled", timeout=60000,
+        )
         state = {
             "engines": await page.evaluate(
                 "[...document.getElementById('engine').options].map(o => o.value)"),

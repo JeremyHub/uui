@@ -201,7 +201,9 @@ async function ensureTransportReady() {
   if (!transport.needsPreparing) return;
 
   loading.show("Loading the model", {
-    detail: "First time only — the weights are cached after this.",
+    detail: gpu.software
+      ? "No GPU available, so this will run on the CPU and be very slow."
+      : "First time only — the weights are cached after this.",
   });
   await transport.prepare(({ fraction, text }) => {
     if (fraction > 0) loading.progress(fraction);
@@ -217,7 +219,11 @@ async function setupEngineChoice() {
 
   const options = [];
   if (backendReachable) options.push(option("ollama", "Ollama (this machine)"));
-  if (gpu.ok) options.push(option("webllm", "In this tab (WebGPU)"));
+  if (gpu.ok) {
+    options.push(option("webllm", gpu.software
+      ? "In this tab (no GPU — very slow)"
+      : "In this tab (WebGPU)"));
+  }
   if (!options.length) {
     options.push(option("ollama", "Ollama (this machine)"));
   }

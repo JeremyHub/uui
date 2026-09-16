@@ -81,11 +81,27 @@ async function loadWebLLM() {
  * adapter is the only honest test.
  *
  * The budget comes from WebGPU's buffer limits rather than deviceMemory, which is system
- * RAM, rounded, and capped at 8 by every browser that reports it at all. Limits are
- * per-buffer and weights are spread across many, so the total a device will take is a
- * multiple of it; 4x is deliberately timid, because picking a model too large means a
- * long download that ends in an out-of-memory error.
+ * RAM, rounded, and capped at 8 by every browser that reports it at all.
+ *
+ * maxBufferSize is taken as the budget directly. It is not a VRAM figure -- it is a
+ * per-buffer cap -- but on the cards this was checked against it lands close: a 4GB
+ * RX 570 reports 4GB, and Chrome's software fallback reports 1GB. Scaling it up, which
+ * an earlier version did, turned that 4GB card into a 16GB budget and would have picked
+ * a model that downloads for several minutes and then fails to allocate. The two
+ * mistakes are not symmetric: too small is a working app with a weaker model, too large
+ * is a long wait ending in nothing.
  */
+const MAX_SENSIBLE_BUDGET_MB = 8192;
+
+/** How much model to try to hold, given what the adapter reports. */
+export function budgetFromLimits(limits = {}) {
+  const perBufferMB = Math.max(
+    (limits.maxBufferSize ?? 0) / (1024 * 1024),
+    (limits.maxStorageBufferBindingSize ?? 0) / (1024 * 1024),
+  );
+  if (perBufferMB <= 0) return 2000;
+  return Math.min(Math.round(perBufferMB), MAX_SENSIBLE_BUDGET_MB);
+}
 export async function webGPUCapability() {
   if (typeof navigator === "undefined" || !("gpu" in navigator)) {
     return { ok: false, budgetMB: 0, why: "This browser has no WebGPU." };
@@ -95,13 +111,20 @@ export async function webGPUCapability() {
     if (!adapter) {
       return { ok: false, budgetMB: 0, why: "WebGPU is present but no adapter is available." };
     }
-    const perBufferMB = Math.max(
-      (adapter.limits?.maxBufferSize ?? 0) / (1024 * 1024),
-      (adapter.limits?.maxStorageBufferBindingSize ?? 0) / (1024 * 1024),
+    // Chrome falls back to SwiftShader -- a CPU rasterizer -- when it cannot reach the
+    // GPU, and reports it as a perfectly good adapter. It does work, at something like a
+    // hundredth of the speed: a first screen that takes 20 seconds on this card did not
+    // finish in fifteen minutes on SwiftShader. Worth saying out loud rather than
+    // letting someone conclude the app is broken.
+    const info = adapter.info ?? {};
+    const software = /swiftshader|lavapipe|llvmpipe|software/i.test(
+      `${info.architecture ?? ""} ${info.description ?? ""} ${info.vendor ?? ""}`,
     );
+
     return {
       ok: true,
-      budgetMB: perBufferMB > 0 ? Math.round(perBufferMB * 4) : 2000,
+      software,
+      budgetMB: budgetFromLimits(adapter.limits),
       // Half the prebuilt models are f16 quantised and simply refuse to start without
       // this extension. Finding that out costs a gigabyte-scale download first, so it
       // is worth asking the adapter up front.

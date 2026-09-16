@@ -503,6 +503,30 @@ async def test_the_picker_avoids_models_too_small_to_follow_the_format(fake, pag
 
 
 @pytest.mark.asyncio
+async def test_the_budget_is_not_inflated_past_what_the_card_holds(fake, page):
+    # maxBufferSize is a per-buffer cap, not a VRAM figure, but it lands close on real
+    # hardware: a 4GB RX 570 reports 4GB. An earlier version scaled it up, which turned
+    # that card into a 16GB budget -- a model that downloads for minutes and then fails
+    # to allocate. Too small is a working app with a weaker model; too large is a long
+    # wait ending in nothing.
+    await page.goto(f"http://localhost:{PORT}/", wait_until="load")
+    budgets = await page.evaluate("""(async () => {
+      const m = await import('./transports.js');
+      const GB = 1024 * 1024 * 1024;
+      return {
+        card4gb: m.budgetFromLimits({ maxBufferSize: 4 * GB, maxStorageBufferBindingSize: 4 * GB }),
+        software: m.budgetFromLimits({ maxBufferSize: 1 * GB, maxStorageBufferBindingSize: 1 * GB }),
+        absurd: m.budgetFromLimits({ maxBufferSize: 64 * GB }),
+        missing: m.budgetFromLimits({}),
+      };
+    })()""")
+    assert budgets["card4gb"] == 4096
+    assert budgets["software"] == 1024
+    assert budgets["absurd"] <= 8192, "an implausible limit was taken at face value"
+    assert 0 < budgets["missing"] <= 4096, "no limits reported should mean a timid guess"
+
+
+@pytest.mark.asyncio
 async def test_models_this_device_cannot_start_are_not_offered(fake, page):
     # Half the prebuilt models are f16 quantised and refuse to start without the
     # shader-f16 extension. Offering one means the refusal arrives after a
