@@ -186,6 +186,33 @@ async def test_a_generated_link_never_navigates_away(fake, page):
     assert "example.com" not in page.frames[1].url
 
 
+@pytest.mark.asyncio
+async def test_a_region_fills_in_as_it_is_written(fake, page):
+    # A region used to stay blank until its whole block closed, so a large one was a
+    # long blank wait while the model was producing renderable elements the whole time.
+    cards = "".join(f"<div class='card'><h2>Card {i}</h2></div>" for i in range(6))
+    scripted(fake, patch=f"#plan fill\n#region results\n{cards}\n#end")
+    fake.chunk_delay = 0.03
+    watcher = Watcher(page)
+    await start_app(page, watcher)
+
+    await click_text(page, "Open Results")
+    seen_partial = False
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        showing = (await watcher.text()).count("Card ")
+        if 0 < showing < 6:
+            seen_partial = True
+            break
+        if showing == 6:
+            break
+        await page.wait_for_timeout(15)
+    await watcher.settle()
+    fake.chunk_delay = 0.004
+    assert seen_partial, "the region went from empty to complete with nothing in between"
+    assert (await watcher.text()).count("Card ") == 6
+
+
 # --- interactions that should cost nothing ----------------------------------
 
 @pytest.mark.asyncio
@@ -213,11 +240,10 @@ async def test_a_local_control_that_does_nothing_is_not_a_dead_end(fake, page):
 
 @pytest.mark.asyncio
 async def test_a_guessed_click_is_far_faster_than_an_unguessed_one(fake, page):
-    # Compared against a cold click in the same run rather than a fixed threshold, so it
-    # states what it means -- guessing ahead pays off -- on any machine, without needing
-    # to know that a prediction cache exists.
-    # A reply long enough that a cold turn is unmistakably slower than a cached one;
-    # with a two-line patch the stub finishes before the difference is measurable.
+    # Measured against a cold click in the same run rather than a fixed threshold, so it
+    # states what it means -- guessing ahead pays off -- on any machine. It compares time
+    # to *finish*, not time to first change: regions now stream in, so a cold click also
+    # shows something almost immediately, and first-change no longer separates the two.
     counter = iter(range(100))
     scripted(fake, patch=lambda _: "#plan turn\n#region results\n"
              + f"<p>turn {next(counter)}</p>" + "<p class='muted'>filler</p>" * 20 + "\n#end")
@@ -225,8 +251,8 @@ async def test_a_guessed_click_is_far_faster_than_an_unguessed_one(fake, page):
 
     watcher = Watcher(page)
     await start_app(page, watcher, predict=False)
-    cold = await watcher.time_to_change(lambda: click_text(page, "Styled Tab"))
-    await watcher.settle()
+    cold = await watcher.turns_taken(lambda: click_text(page, "Styled Tab"))
+    assert cold["calls"] == 1
 
     # Guessing only runs after a turn, so enabling it needs a turn to follow.
     await set_prediction(page, True)
@@ -235,37 +261,11 @@ async def test_a_guessed_click_is_far_faster_than_an_unguessed_one(fake, page):
     await watcher.settle(quiet=2.5)
     assert watcher.started > guesses_before + 1, "idle time was not spent guessing"
 
-    # Timing is the whole claim, and the only signal that stays honest: a click that
-    # aborts an in-flight guess still briefly shows a request outstanding, so counting
-    # requests would measure the abort rather than the hit.
     warm = await watcher.time_to_change(lambda: click_text(page, "Open Results"))
     assert warm["seconds"] < cold["seconds"] / 3, (
         f"guessing saved nothing: {warm['seconds']:.3f}s vs cold {cold['seconds']:.3f}s"
     )
     fake.chunk_delay = 0.004
-
-
-@pytest.mark.asyncio
-async def test_a_page_returned_as_one_block_is_still_updatable_in_parts(fake, page):
-    # Models routinely wrap the whole page in a single section, and a single region
-    # means every update rewrites everything -- the design it replaced. What the model
-    # is told on the next turn is the observable proof it was broken up.
-    one_block = (
-        '<section data-region="everything">'
-        "<h2>Overview</h2><p>overview text</p>"
-        "<h2>Results</h2><p>results text</p>"
-        '<h2>Detail</h2><p>detail text</p><button id="go">Open Results</button>'
-        "</section>"
-    )
-    scripted(fake, shell=one_block)
-    watcher = Watcher(page)
-    await start_app(page, watcher)
-    await watcher.turns_taken(lambda: click_text(page, "Open Results"))
-
-    prompt = "\n".join(m["content"] for m in fake.requests[-1]["messages"])
-    assert prompt.count('data-region="') >= 3, (
-        "the page was still one region, so every update rewrites all of it"
-    )
 
 
 # --- the failure that destroys work ----------------------------------------

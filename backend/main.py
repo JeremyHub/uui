@@ -124,11 +124,47 @@ def clean_output(html: str) -> str:
     return ELISION_RE.sub("", html).strip()
 
 
+TAG_RE = re.compile(r"<(/?)([a-zA-Z][\w-]*)")
+VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input",
+             "link", "meta", "param", "source", "track", "wbr"}
+
+
+def split_complete_elements(text: str):
+    """Cut `text` after each element that closes at the top level.
+
+    Returns (finished, remainder). Cuts land only where the tag depth returns to zero, so
+    a chunk is always renderable on its own -- never half an element. Depth is recomputed
+    over the whole remainder each time rather than carried between calls, because the
+    remainder still contains the tags that produced it and counting both double-counts.
+    Models do not reliably put newlines between elements, so this works on the text
+    rather than line by line.
+    """
+    finished, start, depth = [], 0, 0
+    for match in TAG_RE.finditer(text):
+        closing, tag = match.group(1), match.group(2).lower()
+        if tag in VOID_TAGS:
+            continue
+        depth += -1 if closing else 1
+        if depth > 0:
+            continue
+        end = text.find(">", match.end())
+        end = end + 1 if end != -1 else match.end()
+        finished.append(text[start:end])
+        start, depth = end, 0
+    return finished, text[start:]
+
+
 class PatchParser:
     """Incremental line parser for the #plan / #region / #screen / #end format.
 
     Yields events as soon as a marker line proves the previous block is finished, so a
     region reaches the screen while the model is still writing the next one.
+
+    Within a region it goes further and emits each complete top-level element as it
+    closes. Waiting for the whole block means a region of any size is a blank wait for
+    as long as it takes to write, while the model is producing perfectly renderable
+    elements the entire time. Chunks are cut only where the tag depth returns to zero,
+    so nothing half-written is ever sent.
     """
 
     def __init__(self):
@@ -136,10 +172,12 @@ class PatchParser:
         self.kind = None       # "region" | "screen" | None
         self.region_id = None
         self.body = []
+        self.unflushed = ""    # region text not yet complete enough to send
 
     def _flush(self):
         if self.kind is None:
             return None
+        self.unflushed = ""
         html = clean_output("".join(self.body))
         event = None
         if html:
@@ -158,6 +196,19 @@ class PatchParser:
         while (nl := self.buf.find("\n")) != -1:
             line, self.buf = self.buf[:nl], self.buf[nl + 1:]
             yield from self._line(line)
+        # Inside a region, do not wait for a newline. Models routinely write a whole
+        # region on one line, and holding the buffer until it ends hands the block over
+        # in a single piece -- exactly the blank wait chunking exists to remove.
+        #
+        # Only take a fragment that is unambiguously markup, though: a partial "#end" or
+        # a half-written code fence read as content would be rendered into the page,
+        # because the line-level checks that strip them have not seen a whole line yet.
+        fragment = self.buf.lstrip()
+        if (self.kind == "region" and fragment
+                and not fragment.startswith(("#", "`"))
+                and (self.unflushed or fragment.startswith("<"))):
+            yield from self._consume_body(self.buf)
+            self.buf = ""
 
     def finish(self):
         if self.buf:
@@ -180,6 +231,8 @@ class PatchParser:
             self.kind = "region"
             self.region_id = stripped[7:].strip().strip('"\'') or "main"
             self.body = []
+            self.unflushed = ""
+            yield {"type": "region_open", "id": self.region_id}
         elif stripped.startswith("#screen"):
             if (event := self._flush()):
                 yield event
@@ -188,8 +241,17 @@ class PatchParser:
         elif stripped.startswith("#end"):
             if (event := self._flush()):
                 yield event
+        elif self.kind == "region":
+            yield from self._consume_body(line + "\n")
         elif self.kind is not None:
             self.body.append(line + "\n")
+
+    def _consume_body(self, text: str):
+        self.body.append(text)
+        finished, self.unflushed = split_complete_elements(self.unflushed + text)
+        for piece in finished:
+            if (chunk := clean_output(piece)):
+                yield {"type": "region_chunk", "id": self.region_id, "html": chunk}
 
 
 @app.post("/turn")

@@ -202,9 +202,12 @@ function errorRegion(message) {
 }
 
 function runScripts(root, doc) {
-  root.querySelectorAll("script").forEach((old) => {
+  root.querySelectorAll("script:not([data-uui-ran])").forEach((old) => {
     const s = doc.createElement("script");
     for (const a of old.attributes) s.setAttribute(a.name, a.value);
+    // A region arrives in pieces, so this runs repeatedly over the same element as it
+    // fills; without a mark, every script in it would execute once per piece.
+    s.setAttribute("data-uui-ran", "");
     s.textContent = old.textContent;
     old.replaceWith(s);
   });
@@ -344,13 +347,34 @@ function flash(el) {
   );
 }
 
-function applyRegion(doc, id, html) {
+function regionTarget(doc, id) {
   let target = doc.querySelector(`[data-region="${CSS.escape(id)}"]`);
   if (!target) {
     target = doc.createElement("section");
     target.setAttribute("data-region", id);
     (doc.querySelector("main") || doc.body).append(target);
   }
+  return target;
+}
+
+// A region arrives as a run of complete elements rather than one finished block, so it
+// fills in as the model writes it instead of staying blank until the block closes.
+function openRegion(doc, id) {
+  const target = regionTarget(doc, id);
+  target.innerHTML = "";
+  flash(target);
+}
+
+function appendToRegion(doc, id, html) {
+  const target = regionTarget(doc, id);
+  target.insertAdjacentHTML("beforeend", html);
+  repairImages(target, doc);
+  runScripts(target, doc);
+}
+
+function applyRegion(doc, id, html) {
+  const target = regionTarget(doc, id);
+  if (target.innerHTML === html) return;   // already delivered in pieces
   target.innerHTML = html;
   repairImages(target, doc);
   runScripts(target, doc);
@@ -470,6 +494,8 @@ function applyEvents(doc, events, actionLabel) {
   let plan = "";
   for (const msg of events) {
     if (msg.type === "plan") plan = msg.text;
+    else if (msg.type === "region_open") openRegion(doc, msg.id);
+    else if (msg.type === "region_chunk") appendToRegion(doc, msg.id, msg.html);
     else if (msg.type === "region") applyRegion(doc, msg.id, msg.html);
     else if (msg.type === "screen") applyScreen(doc, msg.html);
     else if (msg.type === "error") {
@@ -508,6 +534,8 @@ async function sendAction(action) {
   try {
     for await (const msg of streamTurn(payload)) {
       if (msg.type === "plan") { plan = msg.text; timerLabel = plan.slice(0, 80); }
+      else if (msg.type === "region_open") openRegion(doc, msg.id);
+      else if (msg.type === "region_chunk") appendToRegion(doc, msg.id, msg.html);
       else if (msg.type === "region") { applyRegion(doc, msg.id, msg.html); touched.push(msg.id); }
       else if (msg.type === "screen") { applyScreen(doc, msg.html); touched.push("(whole screen)"); }
       else if (msg.type === "error") {
