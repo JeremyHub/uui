@@ -441,6 +441,163 @@ async def test_a_long_session_does_not_grow_the_prompt_without_bound(fake, page)
     )
 
 
+# --- where the model runs ---------------------------------------------------
+
+NO_ADAPTER = """
+  if (navigator.gpu) {
+    Object.defineProperty(navigator, 'gpu', { value: { requestAdapter: async () => null } });
+  }
+"""
+
+
+@pytest.mark.asyncio
+async def test_in_tab_inference_is_not_offered_without_a_working_adapter(fake, page):
+    # "gpu" in navigator is true on machines where requestAdapter then returns null.
+    # Offering in-tab inference there means a user picks it and waits for a
+    # multi-gigabyte download that cannot work.
+    await page.add_init_script(NO_ADAPTER)
+    await page.goto(f"http://localhost:{PORT}/", wait_until="load")
+    await page.wait_for_function("document.getElementById('engine').options.length > 0")
+    engines = await page.evaluate("[...document.getElementById('engine').options].map(o => o.value)")
+    assert engines == ["ollama"]
+
+
+@pytest.mark.asyncio
+async def test_the_picker_takes_the_largest_model_that_fits(fake, page):
+    await page.goto(f"http://localhost:{PORT}/", wait_until="load")
+    picked = await page.evaluate("""(async () => {
+      const m = await import('./transports.js');
+      const models = [
+        { id: 'tiny-Instruct', vramMB: 400, lowResource: true },
+        { id: 'mid-Instruct', vramMB: 1600, lowResource: false },
+        { id: 'big-Instruct', vramMB: 3000, lowResource: false },
+        { id: 'huge-Instruct', vramMB: 9000, lowResource: false },
+      ];
+      return {
+        roomy: m.pickWebLLMModel(models, 4000).id,
+        tight: m.pickWebLLMModel(models, 1800).id,
+        none: m.pickWebLLMModel(models, 100).id,
+      };
+    })()""")
+    assert picked["roomy"] == "big-Instruct", "left capacity on the table"
+    assert picked["tight"] == "mid-Instruct", "picked something that would not fit"
+    # Nothing fits: better to try the smallest than to refuse outright.
+    assert picked["none"] == "tiny-Instruct"
+
+
+@pytest.mark.asyncio
+async def test_the_picker_avoids_models_too_small_to_follow_the_format(fake, page):
+    # The protocol asks for structured output with #region markers. Below roughly a
+    # billion parameters a model cannot hold to it, so the app has nothing to apply --
+    # a model that fits comfortably but cannot answer is not the better choice.
+    await page.goto(f"http://localhost:{PORT}/", wait_until="load")
+    picked = await page.evaluate("""(async () => {
+      const m = await import('./transports.js');
+      return m.pickWebLLMModel([
+        { id: 'tiny-Instruct', vramMB: 360, lowResource: true },
+        { id: 'small-Instruct', vramMB: 580, lowResource: true },
+        { id: 'proper-Instruct', vramMB: 1900, lowResource: false },
+      ], 4000).id;
+    })()""")
+    assert picked == "proper-Instruct"
+
+
+@pytest.mark.asyncio
+async def test_a_coder_model_is_preferred_at_the_same_size(fake, page):
+    # The whole output is markup, and a coder-tuned model of the same size holds the
+    # reply format much better.
+    await page.goto(f"http://localhost:{PORT}/", wait_until="load")
+    picked = await page.evaluate("""(async () => {
+      const m = await import('./transports.js');
+      return m.pickWebLLMModel([
+        { id: 'Generic-3B-Instruct', vramMB: 2000, lowResource: false },
+        { id: 'Qwen2.5-Coder-3B-Instruct', vramMB: 1900, lowResource: false },
+      ], 4000).id;
+    })()""")
+    assert "Coder" in picked
+
+
+# --- the loading overlay ----------------------------------------------------
+
+async def overlay_visible(page):
+    return await page.evaluate("!document.getElementById('loading').hidden")
+
+
+@pytest.mark.asyncio
+async def test_the_screen_is_covered_while_the_first_one_is_built(fake, page):
+    scripted(fake)
+    fake.chunk_delay = 0.02
+    watcher = Watcher(page)
+    await page.goto(f"http://localhost:{PORT}/", wait_until="load")
+    await set_prediction(page, False)
+    await page.fill("#concept", "a test app")
+    await page.click("#start-btn")
+
+    seen = False
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        if await overlay_visible(page):
+            seen = True
+            break
+        await page.wait_for_timeout(20)
+    await watcher.settle()
+    fake.chunk_delay = 0.004
+    assert seen, "the first screen was built with nothing to say so"
+    assert not await overlay_visible(page), "the overlay outlived the turn"
+
+
+@pytest.mark.asyncio
+async def test_a_click_during_a_turn_does_not_reach_the_page(fake, page):
+    # Mid-turn the page is half-rewritten: a region emptied, controls about to be
+    # replaced. Clicks were ignored anyway -- the turn in flight wins -- but looked like
+    # they should work, which is worse than being told to wait.
+    # Long enough that the turn outlives the overlay's grace period; a short turn is
+    # supposed to finish without ever showing it.
+    scripted(fake, patch="#plan slow\n#region results\n"
+             + "<p class='muted'>filler</p>" * 40 + "\n#end")
+    fake.chunk_delay = 0.02
+    watcher = Watcher(page)
+    await start_app(page, watcher)
+
+    await click_text(page, "Open Results")
+    await page.wait_for_timeout(400)
+    assert await overlay_visible(page), "nothing was covering the page mid-turn"
+
+    calls_before = watcher.started
+    # A click aimed at where a control is; the overlay is on top, so it lands there.
+    box = await (await page.frames[1].query_selector('text="Styled Tab"')).bounding_box()
+    stage = await page.query_selector("#stage")
+    origin = await stage.bounding_box()
+    await page.mouse.click(origin["x"] + box["x"] + box["width"] / 2,
+                           origin["y"] + box["y"] + box["height"] / 2)
+    await page.wait_for_timeout(300)
+    assert watcher.started == calls_before, "a click got through to the page mid-turn"
+
+    await watcher.settle()
+    fake.chunk_delay = 0.004
+    assert not await overlay_visible(page)
+
+
+@pytest.mark.asyncio
+async def test_an_instant_turn_never_flashes_the_overlay(fake, page):
+    # A guessed click applies in milliseconds. Flashing a progress card over it would
+    # make the fastest thing the app does look like the slowest.
+    scripted(fake)
+    watcher = Watcher(page)
+    await start_app(page, watcher, predict=True)
+    await watcher.settle(quiet=1.5)
+
+    await click_text(page, "Open Results")
+    flashed = False
+    for _ in range(8):
+        if await overlay_visible(page):
+            flashed = True
+            break
+        await page.wait_for_timeout(20)
+    await watcher.settle(quiet=1.0)
+    assert not flashed, "an instant update still showed a loading overlay"
+
+
 # --- live data --------------------------------------------------------------
 
 @pytest.mark.asyncio

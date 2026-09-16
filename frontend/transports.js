@@ -72,32 +72,36 @@ async function loadWebLLM() {
   return webllmModule;
 }
 
-export function webGPUAvailable() {
-  return typeof navigator !== "undefined" && "gpu" in navigator;
-}
-
 /**
- * How much model this device can be asked to hold, in MB.
+ * Whether a model can actually run here, and how much of one.
  *
- * WebGPU reports buffer limits rather than total VRAM, and the largest single buffer is
- * what actually caps a model here, so it is a better guide than deviceMemory -- which is
- * system RAM, rounded, and capped at 8 on every browser that reports it at all. Falls
- * back to a deliberately timid number: picking a model too large means a long download
- * that ends in an out-of-memory error, which is far worse than picking a small one.
+ * `"gpu" in navigator` is not the question: the property exists on machines where
+ * requestAdapter() then returns null, and offering in-tab inference there means a user
+ * picks it and waits for a multi-gigabyte download that cannot work. Asking for the
+ * adapter is the only honest test.
+ *
+ * The budget comes from WebGPU's buffer limits rather than deviceMemory, which is system
+ * RAM, rounded, and capped at 8 by every browser that reports it at all. Limits are
+ * per-buffer and weights are spread across many, so the total a device will take is a
+ * multiple of it; 4x is deliberately timid, because picking a model too large means a
+ * long download that ends in an out-of-memory error.
  */
-export async function vramBudgetMB() {
-  if (!webGPUAvailable()) return 0;
+export async function webGPUCapability() {
+  if (typeof navigator === "undefined" || !("gpu" in navigator)) {
+    return { ok: false, budgetMB: 0, why: "This browser has no WebGPU." };
+  }
   try {
     const adapter = await navigator.gpu.requestAdapter();
-    if (!adapter) return 0;
-    const maxBufferMB = (adapter.limits?.maxBufferSize ?? 0) / (1024 * 1024);
-    const maxStorageMB = (adapter.limits?.maxStorageBufferBindingSize ?? 0) / (1024 * 1024);
-    const reported = Math.max(maxBufferMB, maxStorageMB);
-    // Limits are per-buffer, not a total, and weights are split across many buffers, so
-    // the total a device will take is some multiple of this. 4x is conservative.
-    return reported > 0 ? Math.round(reported * 4) : 2000;
-  } catch {
-    return 2000;
+    if (!adapter) {
+      return { ok: false, budgetMB: 0, why: "WebGPU is present but no adapter is available." };
+    }
+    const perBufferMB = Math.max(
+      (adapter.limits?.maxBufferSize ?? 0) / (1024 * 1024),
+      (adapter.limits?.maxStorageBufferBindingSize ?? 0) / (1024 * 1024),
+    );
+    return { ok: true, budgetMB: perBufferMB > 0 ? Math.round(perBufferMB * 4) : 2000 };
+  } catch (e) {
+    return { ok: false, budgetMB: 0, why: `WebGPU could not start (${e.message}).` };
   }
 }
 
@@ -116,12 +120,17 @@ export async function listWebLLMModels() {
     .sort((a, b) => (a.vramMB ?? 1e9) - (b.vramMB ?? 1e9));
 }
 
+// Below roughly this, a model cannot hold to the reply format at all -- it will not
+// keep the #region markers straight, so the app has nothing to apply. Worth picking
+// anyway if nothing else fits, but not worth preferring.
+const USABLE_FLOOR_MB = 1200;
+
 /**
  * The best model this device can be expected to run.
  *
- * Largest that fits the budget, because quality falls off a cliff below about 1B and the
- * protocol asks for structured output that tiny models cannot hold to. Among equals,
- * prefer the families that follow instructions best at small sizes.
+ * Largest that fits the budget: quality falls off a cliff at the small end and the
+ * protocol asks for structured output. Among equals, prefer the families that follow
+ * instructions best at small sizes.
  */
 export function pickWebLLMModel(models, budgetMB) {
   const affordable = models.filter((m) => m.vramMB !== null && m.vramMB <= budgetMB);
@@ -134,8 +143,9 @@ export function pickWebLLMModel(models, budgetMB) {
     return 0;
   };
   const headroom = budgetMB * 0.9;
+  const usable = affordable.filter((m) => m.vramMB <= headroom && m.vramMB >= USABLE_FLOOR_MB);
   const shortlist = affordable.filter((m) => m.vramMB <= headroom);
-  const pool = shortlist.length ? shortlist : affordable;
+  const pool = usable.length ? usable : (shortlist.length ? shortlist : affordable);
   return pool.reduce((best, m) => {
     const better = rank(m) - rank(best);
     if (better !== 0) return better > 0 ? m : best;

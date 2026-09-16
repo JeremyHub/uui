@@ -12,7 +12,7 @@ import { Journal } from "./journal.js";
 import { SHELL_MAX_TOKENS, runPatch, runShell } from "./turn.js";
 import {
   createOllamaTransport, createWebLLMTransport, listWebLLMModels, pickWebLLMModel,
-  vramBudgetMB, webGPUAvailable,
+  webGPUCapability,
 } from "./transports.js";
 
 const appEl = document.getElementById("app");
@@ -161,7 +161,8 @@ async function populateModels() {
     const preferred = models.find((m) => /qwen2\.5-coder/.test(m.id)) ?? models[0];
     if (preferred) modelEl.value = preferred.id;
   } else {
-    const [models, budget] = await Promise.all([listWebLLMModels(), vramBudgetMB()]);
+    const models = await listWebLLMModels();
+    const budget = gpu.budgetMB;
     const auto = pickWebLLMModel(models, budget);
     modelEl.replaceChildren(
       option("auto", auto ? `Auto · ${auto.id}` : "Auto"),
@@ -199,13 +200,17 @@ async function ensureTransportReady() {
   });
 }
 
-function setupEngineChoice() {
+let gpu = { ok: false, budgetMB: 0 };
+
+async function setupEngineChoice() {
+  gpu = await webGPUCapability();
   const options = [option("ollama", "Ollama (this machine)")];
-  if (webGPUAvailable()) options.push(option("webllm", "In this tab (WebGPU)"));
+  if (gpu.ok) options.push(option("webllm", "In this tab (WebGPU)"));
   engineEl.replaceChildren(...options);
-  // Served as static files with no backend, there is nothing for Ollama to talk to, so
+  engineEl.title = gpu.ok ? "Where the model runs" : `Where the model runs. ${gpu.why}`;
+  // Served as static files with no backend there is nothing for Ollama to talk to, so
   // in-tab is the only thing that can work.
-  engineEl.value = location.protocol === "file:" && webGPUAvailable() ? "webllm" : "ollama";
+  engineEl.value = location.protocol === "file:" && gpu.ok ? "webllm" : "ollama";
   engineEl.addEventListener("change", () => { transport = null; populateModels(); });
   modelEl.addEventListener("change", () => { transport = null; });
   return populateModels();
