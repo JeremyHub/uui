@@ -216,9 +216,12 @@ async def test_a_guessed_click_is_far_faster_than_an_unguessed_one(fake, page):
     # Compared against a cold click in the same run rather than a fixed threshold, so it
     # states what it means -- guessing ahead pays off -- on any machine, without needing
     # to know that a prediction cache exists.
+    # A reply long enough that a cold turn is unmistakably slower than a cached one;
+    # with a two-line patch the stub finishes before the difference is measurable.
     counter = iter(range(100))
-    scripted(fake, patch=lambda _: f"#plan turn\n#region results\n<p>turn {next(counter)}</p>\n#end")
-    fake.chunk_delay = 0.02      # a turn the stub cannot finish before it is noticed
+    scripted(fake, patch=lambda _: "#plan turn\n#region results\n"
+             + f"<p>turn {next(counter)}</p>" + "<p class='muted'>filler</p>" * 20 + "\n#end")
+    fake.chunk_delay = 0.02
 
     watcher = Watcher(page)
     await start_app(page, watcher, predict=False)
@@ -240,6 +243,29 @@ async def test_a_guessed_click_is_far_faster_than_an_unguessed_one(fake, page):
         f"guessing saved nothing: {warm['seconds']:.3f}s vs cold {cold['seconds']:.3f}s"
     )
     fake.chunk_delay = 0.004
+
+
+@pytest.mark.asyncio
+async def test_a_page_returned_as_one_block_is_still_updatable_in_parts(fake, page):
+    # Models routinely wrap the whole page in a single section, and a single region
+    # means every update rewrites everything -- the design it replaced. What the model
+    # is told on the next turn is the observable proof it was broken up.
+    one_block = (
+        '<section data-region="everything">'
+        "<h2>Overview</h2><p>overview text</p>"
+        "<h2>Results</h2><p>results text</p>"
+        '<h2>Detail</h2><p>detail text</p><button id="go">Open Results</button>'
+        "</section>"
+    )
+    scripted(fake, shell=one_block)
+    watcher = Watcher(page)
+    await start_app(page, watcher)
+    await watcher.turns_taken(lambda: click_text(page, "Open Results"))
+
+    prompt = "\n".join(m["content"] for m in fake.requests[-1]["messages"])
+    assert prompt.count('data-region="') >= 3, (
+        "the page was still one region, so every update rewrites all of it"
+    )
 
 
 # --- the failure that destroys work ----------------------------------------

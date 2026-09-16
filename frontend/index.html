@@ -271,6 +271,50 @@ function ensureRegions(doc) {
   })(host);
 }
 
+// Region granularity is what an update costs: patching rewrites one region, so a page
+// that comes back as a single region patches like the old whole-page design did. Asked
+// for 4-7 regions a 3B model complies most of the time and then returns one <section>
+// wrapping everything, and no amount of prompting reliably fixes that.
+//
+// It does not have to. Regions are an addressing scheme the app owns, so the app can
+// enforce the granularity it needs: anything that dominates the page gets its children
+// promoted to regions in its place. Nothing moves in the DOM -- the oversized block
+// stays exactly where it is as a layout container, it just stops being the unit of
+// update.
+const OVERSIZED_SHARE = 0.55;
+const MAX_REGIONS = 8;
+
+function regionName(el, used) {
+  const heading = el.querySelector("h1, h2, h3, h4");
+  const raw = (heading ? heading.textContent : el.getAttribute("aria-label") || "")
+    .trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 28);
+  const base = raw || el.tagName.toLowerCase();
+  let name = base, n = 2;
+  while (used.has(name)) name = `${base}-${n++}`;
+  used.add(name);
+  return name;
+}
+
+function splitOversizedRegions(doc) {
+  const total = doc.body.innerHTML.length || 1;
+  const used = new Set(
+    [...doc.querySelectorAll("[data-region]")].map((el) => el.getAttribute("data-region"))
+  );
+  for (const region of [...doc.querySelectorAll("[data-region]")]) {
+    if (doc.querySelectorAll("[data-region]").length >= MAX_REGIONS) break;
+    if (region.innerHTML.length / total < OVERSIZED_SHARE) continue;
+    const kids = [...region.children].filter(
+      (c) => !["SCRIPT", "STYLE"].includes(c.tagName) && c.textContent.trim()
+    );
+    if (kids.length < 2) continue;
+    used.delete(region.getAttribute("data-region"));
+    region.removeAttribute("data-region");
+    kids.forEach((kid) => {
+      if (!kid.hasAttribute("data-region")) kid.setAttribute("data-region", regionName(kid, used));
+    });
+  }
+}
+
 // Every small model tested invents local image paths ("cat1.jpg") no matter how firmly
 // the prompt forbids it, and a page full of broken-image icons reads as broken even when
 // the content is good. Repair it in the DOM instead of relying on the model: seed a real
@@ -318,6 +362,7 @@ function applyScreen(doc, html) {
   repairImages(doc.body, doc);
   runScripts(doc.body, doc);
   ensureRegions(doc);
+  splitOversizedRegions(doc);
   flash(doc.body);
 }
 
@@ -526,6 +571,7 @@ async function startFromConcept() {
   try {
     if (scriptFailed) runScripts(doc.body, doc);
     ensureRegions(doc);
+    splitOversizedRegions(doc);
     repairImages(doc.body, doc);
   } catch (e) {
     console.error("post-shell fixups failed", e);

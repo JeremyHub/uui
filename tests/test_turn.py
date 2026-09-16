@@ -128,6 +128,25 @@ def test_fences_inside_a_patch_are_ignored(app):
     assert of_type(events(client, mode="patch"), "region")[0]["html"] == "<p>hi</p>"
 
 
+def test_a_turn_that_produces_nothing_is_tried_again(app):
+    # A plan with no region under it means the click did nothing at all, and the user
+    # cannot tell a broken control from a slow one. It costs almost no tokens to fail
+    # this way, so it costs almost nothing to ask again.
+    fake, client = app
+    replies = iter(["#plan I will show the results\n#end", PATCH])
+    fake.default = lambda _: next(replies, PATCH)
+    evs = events(client, mode="patch", regions=[{"id": "photo-grid", "html": "<p>old</p>"}])
+    assert [e["id"] for e in of_type(evs, "region")] == ["photo-grid"]
+    assert len(fake.requests) == 2, "the empty turn was not retried"
+
+
+def test_a_turn_that_produces_content_is_not_retried(app):
+    fake, client = app
+    fake.default = PATCH
+    events(client, mode="patch", regions=[{"id": "photo-grid", "html": "<p>old</p>"}])
+    assert len(fake.requests) == 1
+
+
 # --- the failure that destroys work ----------------------------------------
 
 def test_a_screen_swap_without_regions_cannot_wipe_the_page(app):

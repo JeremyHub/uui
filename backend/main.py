@@ -309,14 +309,36 @@ def guard_screen(event: dict, req: Turn) -> dict:
     return {"type": "region", "id": biggest["id"], "html": event["html"], "demoted": True}
 
 
-async def run_patch(client, req: Turn):
-    model = req.model or PATCH_MODEL
-    user = build_patch_user_message(req)
-    yield {"type": "phase", "name": "updating"}
+RETRY_NUDGE = (
+    "\n\nYour last reply had a #plan but no #region block, so nothing changed on screen. "
+    "Reply again, and this time include the #region line and the full new HTML under it."
+)
 
+
+async def patch_once(client, model, user, req):
     parser = PatchParser()
     async for piece in ollama_stream(client, model, PATCH_SYSTEM_PROMPT, user, 1600, 0.4):
         for event in parser.feed(piece):
             yield guard_screen(event, req)
     for event in parser.finish():
         yield guard_screen(event, req)
+
+
+async def run_patch(client, req: Turn):
+    model = req.model or PATCH_MODEL
+    user = build_patch_user_message(req)
+    yield {"type": "phase", "name": "updating"}
+
+    produced = False
+    async for event in patch_once(client, model, user, req):
+        produced = produced or event["type"] in ("region", "screen")
+        yield event
+
+    if not produced:
+        # The model announced a plan and then wrote nothing under it, so the click did
+        # nothing at all -- the worst outcome available, since the user cannot tell a
+        # broken control from a slow one. Nothing has been sent yet, so there is nothing
+        # to undo, and the failure is fast precisely because it generated almost no
+        # tokens. Ask once more, saying what was missing.
+        async for event in patch_once(client, model, user + RETRY_NUDGE, req):
+            yield event
