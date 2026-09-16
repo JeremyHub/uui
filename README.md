@@ -139,8 +139,14 @@ directly.
 Model choice defaults to **Auto**, because the honest answer for most people is "whichever
 one works" and the wrong choice is a long download that ends in an out-of-memory error.
 Auto takes the largest model fitting the device's WebGPU buffer limits, prefers a
-coder-tuned one at the same size, and will not pick anything under about a billion
-parameters unless nothing else fits — below that a model cannot hold to the reply format.
+coder-tuned one at the same size, skips models needing a WebGPU extension this device
+lacks, and will not pick anything under about a billion parameters unless nothing else
+fits — below that a model cannot hold to the reply format.
+
+How fast this is depends entirely on the GPU. On a machine where WebGPU has real
+acceleration it is comparable to Ollama; where it falls back to a software path it is far
+slower than the Ollama route on the same box, which is why the loading overlay reports
+download and generation progress rather than just spinning.
 
 ## Testing
 
