@@ -82,11 +82,20 @@ async def run(url, concept, turns, predict):
                 print("  nothing on screen looks clickable")
                 break
             label = labels[i % len(labels)]
-            result = await watcher.turns_taken(lambda: page.evaluate(CLICK_JS, label), quiet=1.0)
-            (paid if result["calls"] else free).append(result["seconds"])
-            cost = f"{result['calls']} model call" + ("s" if result["calls"] != 1 else "")
-            note = "" if result["changed"] else "  NOTHING CHANGED"
-            print(f"  click {label[:30]!r:32} {result['seconds']:5.1f}s  {cost}{note}")
+            before_calls, before_html = watcher.started, await watcher.html()
+            # Time to the screen finishing, not to everything going quiet: guessing
+            # starts the moment a turn ends, and waiting for it would report a click as
+            # having taken as long as the work done after it.
+            seconds = await watcher.time_to_stable(
+                lambda: page.evaluate(CLICK_JS, label), quiet=1.0, limit=300
+            )
+            calls = watcher.started - before_calls
+            changed = (await watcher.html()) != before_html
+            await watcher.settle(quiet=1.0, limit=300)
+            (paid if calls else free).append(seconds)
+            cost = f"{calls} model call" + ("s" if calls != 1 else "")
+            note = "" if changed else "  NOTHING CHANGED"
+            print(f"  click {label[:30]!r:32} {seconds:5.1f}s  {cost}{note}")
 
         if paid:
             print(f"\nturns that asked the model: {len(paid)}, mean {sum(paid)/len(paid):.1f}s")

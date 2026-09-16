@@ -244,6 +244,21 @@ function regionHost(doc) {
 function ensureRegions(doc) {
   const host = regionHost(doc);
 
+  // Ids address regions, so duplicates are not a cosmetic problem: every patch aimed at
+  // a repeated id lands on the first one, and the rest can never be updated at all.
+  // Models emit the same id five times more often than you would hope.
+  const taken = new Set();
+  doc.querySelectorAll("[data-region]").forEach((el) => {
+    let id = el.getAttribute("data-region");
+    if (taken.has(id)) {
+      let n = 2;
+      while (taken.has(`${id}-${n}`)) n++;
+      id = `${id}-${n}`;
+      el.setAttribute("data-region", id);
+    }
+    taken.add(id);
+  });
+
   // Regions are top-level blocks, full stop. Told to tag "every top-level block", models
   // will happily tag every recipe card and every card's info panel too -- one page came
   // back with thirty regions, which puts the whole document in the prompt again and
@@ -252,9 +267,7 @@ function ensureRegions(doc) {
     if (el.parentElement !== host) el.removeAttribute("data-region");
   });
 
-  const used = new Set(
-    [...doc.querySelectorAll("[data-region]")].map((el) => el.getAttribute("data-region"))
-  );
+  const used = taken;
 
   // Tagging a block that already holds regions would nest them, and a nested region is
   // worse than no region: its parent carries a duplicate of everything inside it, so

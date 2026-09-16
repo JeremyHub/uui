@@ -7,6 +7,7 @@ because the model is a stub rather than a 3B on the GPU.
 """
 
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -298,6 +299,24 @@ async def test_pointing_at_a_control_gets_a_head_start_on_clicking_it(fake, page
 
     fake.chunk_delay = 0.004
     assert hovered < cold / 3, f"hovering bought nothing: {hovered:.3f}s vs cold {cold:.3f}s"
+
+
+@pytest.mark.asyncio
+async def test_repeated_region_ids_are_made_unique(fake, page):
+    # An id addresses a region, so a repeated one means every patch aimed at it lands on
+    # the first copy and the rest can never be updated at all.
+    duplicated = (
+        "".join(f'<section data-region="item"><h2>Item {i}</h2></section>' for i in range(4))
+        + '<section data-region="nav"><button id="go">Open Results</button></section>'
+    )
+    scripted(fake, shell=duplicated)
+    watcher = Watcher(page)
+    await start_app(page, watcher)
+    await watcher.turns_taken(lambda: click_text(page, "Open Results"))
+
+    prompt = "\n".join(m["content"] for m in fake.requests[-1]["messages"])
+    ids = re.findall(r'data-region="([^"]+)"', prompt)
+    assert len(ids) == len(set(ids)), f"the model was shown duplicate region ids: {ids}"
 
 
 # --- the failure that destroys work ----------------------------------------
