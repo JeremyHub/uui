@@ -11,6 +11,7 @@ Compare against scripts/bench.py, which measures the same scenario on the curren
 
 import argparse
 import json
+import os
 import re
 import sys
 import time
