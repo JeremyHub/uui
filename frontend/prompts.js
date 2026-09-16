@@ -1,6 +1,10 @@
-"""Prompt contracts for the two kinds of turn: building a screen, and patching one."""
+// The two prompt contracts, and the only place they live.
+//
+// Generated pages are rendered by the browser, so the turn protocol lives here rather
+// than on a server: the same code runs whether the model is Ollama on this machine or
+// a model running in this tab. A static copy of this directory is a working app.
 
-SHELL_SYSTEM_PROMPT = """You build the body of a live single-page app.
+export const SHELL_SYSTEM_PROMPT = `You build the body of a live single-page app.
 
 The page already has a stylesheet, written for exactly this job. Use it. Do not write
 layout, typography or colour CSS -- you will only make it worse and slower.
@@ -53,9 +57,9 @@ Interactivity:
   in a <script> at the end, and its control marked data-local (a bare attribute, no value)
   on the control itself, never on a whole nav, section or footer.
 - Leave every other control plain; those are handled for you.
-"""
+`;
 
-PATCH_SYSTEM_PROMPT = """You update a live single-page app by rewriting ONLY the parts that change.
+export const PATCH_SYSTEM_PROMPT = `You update a live single-page app by rewriting ONLY the parts that change.
 
 You are given the app concept, the markup of each region currently on screen, and the
 action the user just took. The page's stylesheet is the shared one you already know:
@@ -100,4 +104,5 @@ Rules:
 #end
 
 - No code fences. Nothing outside this format.
-"""
+`;
+

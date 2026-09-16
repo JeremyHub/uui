@@ -6,7 +6,7 @@ broke the suite and a passing suite proved only that those variables still exist
 
 Everything here is observed from outside instead:
 
-  - whether the model was consulted, by counting POSTs to /turn
+  - whether the model was consulted, by counting POSTs to the model endpoint
   - whether the screen changed, by watching the iframe's HTML
   - when it settled, by waiting for both to go quiet
 
@@ -32,12 +32,19 @@ class Watcher:
         page.on("requestfinished", self._done)
         page.on("requestfailed", self._done)
 
+    # Every model call goes through this one endpoint, whoever is orchestrating, so
+    # counting it says whether the app consulted a model without knowing how it decided to.
+    MODEL_ENDPOINT = "/chat"
+
+    def _is_model_call(self, request):
+        return request.method == "POST" and request.url.endswith(self.MODEL_ENDPOINT)
+
     def _request(self, request):
-        if request.url.endswith("/turn") and request.method == "POST":
+        if self._is_model_call(request):
             self.started += 1
 
     def _done(self, request):
-        if request.url.endswith("/turn") and request.method == "POST":
+        if self._is_model_call(request):
             self.finished += 1
 
     @property

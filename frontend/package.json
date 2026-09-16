@@ -1,0 +1,5 @@
+{
+  "type": "module",
+  "private": true,
+  "description": "Marks these modules as ESM. The browser infers it from <script type=module>; this is so node can load them directly for quick checks."
+}

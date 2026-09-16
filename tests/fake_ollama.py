@@ -69,6 +69,23 @@ class FakeOllama:
                 except (BrokenPipeError, ConnectionResetError):
                     self.close_connection = True
 
+            def do_GET(self):
+                # The model picker asks Ollama what has been pulled. A stub that cannot
+                # answer leaves the app with no model selected and every test failing
+                # for a reason that has nothing to do with what it is testing.
+                if self.path.rstrip("/").endswith("/api/tags"):
+                    body = json.dumps({"models": [
+                        {"name": "stub-model:latest", "size": 2_000_000_000},
+                    ]}).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                self.send_response(404)
+                self.end_headers()
+
             def do_POST(self):
                 body = self.rfile.read(int(self.headers["Content-Length"]))
                 if fake.fail_with:
