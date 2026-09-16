@@ -422,7 +422,10 @@ async function* streamTurn(payload, signal) {
 // killed the instant the user actually does something -- closing the connection
 // stops Ollama generating, so the GPU is free again immediately.
 
-const predictions = new Map();    // signature -> { events } once complete
+const predictions = new Map();    // signature -> events, once a guess is complete
+// Long enough that sweeping the pointer across a toolbar does not fire on every control,
+// short enough to still get a head start on the click.
+const HOVER_DELAY_MS = 90;
 let specAbort = null;
 let specRun = 0;
 
@@ -432,6 +435,7 @@ function signature(action) {
 }
 
 function cancelSpeculation() {
+  clearTimeout(hoverTimer);
   specRun++;
   if (specAbort) { specAbort.abort(); specAbort = null; }
 }
@@ -453,39 +457,57 @@ function speculationTargets(doc) {
     .slice(0, 3);
 }
 
+async function generatePrediction(doc, el, myRun) {
+  const action = { event: "click", elementData: describeElement(el), formValues: collectFormState(doc) };
+  const key = signature(action);
+  if (predictions.has(key)) return true;
+
+  specAbort = new AbortController();
+  const events = [];
+  try {
+    for await (const msg of streamTurn(
+      { concept, ...buildScreen(doc), action, recent, mode: "patch", speculative: true },
+      specAbort.signal
+    )) {
+      if (myRun !== specRun) return false;
+      events.push(msg);
+    }
+  } catch (e) {
+    if (e.name !== "AbortError") console.warn("speculation failed", e);
+    return false;
+  } finally {
+    specAbort = null;
+  }
+  if (myRun !== specRun || !events.some((e) => e.type === "region" || e.type === "screen")) return false;
+  predictions.set(key, events);
+  setStatus("", `ready: ${predictions.size} predicted`);
+  return true;
+}
+
+// Idle-time guessing: work through the most prominent controls after a turn settles.
 async function speculate(doc) {
   if (!speculateEl.checked) return;
   const myRun = ++specRun;
-  const screen = buildScreen(doc);
-  const formValues = collectFormState(doc);
-
   for (const el of speculationTargets(doc)) {
     if (myRun !== specRun) return;
-    const action = { event: "click", elementData: describeElement(el), formValues };
-    const key = signature(action);
-    if (predictions.has(key)) continue;
-
-    specAbort = new AbortController();
-    const events = [];
-    try {
-      for await (const msg of streamTurn(
-        { concept, ...screen, action, recent, mode: "patch", speculative: true },
-        specAbort.signal
-      )) {
-        if (myRun !== specRun) return;
-        events.push(msg);
-      }
-      if (myRun === specRun && events.some((e) => e.type === "region" || e.type === "screen")) {
-        predictions.set(key, events);
-        setStatus("", `ready: ${predictions.size} predicted`);
-      }
-    } catch (e) {
-      if (e.name !== "AbortError") console.warn("speculation failed", e);
-      return;   // aborted, or the model errored -- either way stop predicting
-    } finally {
-      specAbort = null;
-    }
+    await generatePrediction(doc, el, myRun);
   }
+}
+
+// Pointing at something is a much better guess than guessing in order, and it arrives a
+// few hundred milliseconds before the click does -- often most of a turn's head start.
+// A hovered control therefore jumps the queue, cancelling whatever was being guessed on
+// spec. Idle guessing stays as the fallback, since touch never hovers at all.
+let hoverTimer = null;
+function predictOnHover(doc, el) {
+  if (!speculateEl.checked || busy || isLocal(el)) return;
+  clearTimeout(hoverTimer);
+  hoverTimer = setTimeout(() => {
+    if (busy) return;
+    cancelSpeculation();
+    const myRun = specRun;
+    generatePrediction(doc, el, myRun);
+  }, HOVER_DELAY_MS);
 }
 
 // --- turns ------------------------------------------------------------------
@@ -709,6 +731,11 @@ function attachDelegation(doc) {
       elementData: describeElement(e.submitter || form),
       formValues: collectFormState(doc),
     });
+  }, true);
+
+  doc.addEventListener("mouseover", (e) => {
+    const el = findControl(e.target, doc);
+    if (el) predictOnHover(doc, el);
   }, true);
 
   // Typing invalidates any prediction keyed on the old form values, and the user is

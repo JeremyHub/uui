@@ -88,6 +88,25 @@ class Watcher:
             await asyncio.sleep(0.02)
         raise AssertionError("the screen never changed")
 
+    async def time_to_stable(self, action, quiet=0.4, limit=60):
+        """How long after `action` the screen took to finish changing.
+
+        Not the same as settling: settling also waits for background guessing to finish,
+        which starts the moment a turn ends and swamps the thing being measured. What a
+        user waits for is the screen to stop moving.
+        """
+        t0 = time.monotonic()
+        await action()
+        last, last_change = await self.html(), t0
+        while time.monotonic() < t0 + limit:
+            await asyncio.sleep(0.02)
+            now = await self.html()
+            if now != last:
+                last, last_change = now, time.monotonic()
+            elif time.monotonic() - last_change > quiet:
+                break
+        return last_change - t0
+
     async def turns_taken(self, action, quiet=0.5):
         """Run `action`, then report how many model calls it cost and what changed."""
         before_calls, before_html = self.started, await self.html()

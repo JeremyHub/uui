@@ -241,9 +241,9 @@ async def test_a_local_control_that_does_nothing_is_not_a_dead_end(fake, page):
 @pytest.mark.asyncio
 async def test_a_guessed_click_is_far_faster_than_an_unguessed_one(fake, page):
     # Measured against a cold click in the same run rather than a fixed threshold, so it
-    # states what it means -- guessing ahead pays off -- on any machine. It compares time
-    # to *finish*, not time to first change: regions now stream in, so a cold click also
-    # shows something almost immediately, and first-change no longer separates the two.
+    # states what it means -- guessing ahead pays off -- on any machine. It compares how
+    # long the screen took to finish changing: regions stream in now, so a cold click
+    # also shows something almost immediately and first-change no longer separates them.
     counter = iter(range(100))
     scripted(fake, patch=lambda _: "#plan turn\n#region results\n"
              + f"<p>turn {next(counter)}</p>" + "<p class='muted'>filler</p>" * 20 + "\n#end")
@@ -251,8 +251,7 @@ async def test_a_guessed_click_is_far_faster_than_an_unguessed_one(fake, page):
 
     watcher = Watcher(page)
     await start_app(page, watcher, predict=False)
-    cold = await watcher.turns_taken(lambda: click_text(page, "Styled Tab"))
-    assert cold["calls"] == 1
+    cold = await watcher.time_to_stable(lambda: click_text(page, "Styled Tab"))
 
     # Guessing only runs after a turn, so enabling it needs a turn to follow.
     await set_prediction(page, True)
@@ -261,11 +260,44 @@ async def test_a_guessed_click_is_far_faster_than_an_unguessed_one(fake, page):
     await watcher.settle(quiet=2.5)
     assert watcher.started > guesses_before + 1, "idle time was not spent guessing"
 
-    warm = await watcher.time_to_change(lambda: click_text(page, "Open Results"))
-    assert warm["seconds"] < cold["seconds"] / 3, (
-        f"guessing saved nothing: {warm['seconds']:.3f}s vs cold {cold['seconds']:.3f}s"
-    )
+    warm = await watcher.time_to_stable(lambda: click_text(page, "Open Results"))
+    assert warm < cold / 3, f"guessing saved nothing: {warm:.3f}s vs cold {cold:.3f}s"
     fake.chunk_delay = 0.004
+
+
+# Idle guessing only reaches the first few controls, so a page needs more than that
+# before hovering can show it is doing anything the idle pass was not already doing.
+CROWDED_SHELL = (
+    '<section data-region="nav">'
+    + "".join(f'<button id="b{i}">Choice {i}</button>' for i in range(6))
+    + "</section><section data-region=\"results\"><p>original results</p></section>"
+)
+
+
+@pytest.mark.asyncio
+async def test_pointing_at_a_control_gets_a_head_start_on_clicking_it(fake, page):
+    # Hover arrives a few hundred milliseconds before the click and says far more about
+    # what the user wants than working through controls in page order does.
+    counter = iter(range(100))
+    scripted(fake, shell=CROWDED_SHELL,
+             patch=lambda _: "#plan turn\n#region results\n"
+             + f"<p>turn {next(counter)}</p>" + "<p class='muted'>filler</p>" * 20 + "\n#end")
+    fake.chunk_delay = 0.02
+
+    watcher = Watcher(page)
+    await start_app(page, watcher, predict=True)
+    await watcher.settle(quiet=1.5)          # idle guessing covers the first few
+
+    # "Choice 5" is past where the idle pass reaches, so this is a genuine cold turn.
+    cold = await watcher.time_to_stable(lambda: click_text(page, "Choice 5"))
+    await watcher.settle(quiet=1.5)
+
+    await (await page.frames[1].query_selector('text="Choice 4"')).hover()
+    await watcher.settle(quiet=1.5)          # let the hover guess finish
+    hovered = await watcher.time_to_stable(lambda: click_text(page, "Choice 4"))
+
+    fake.chunk_delay = 0.004
+    assert hovered < cold / 3, f"hovering bought nothing: {hovered:.3f}s vs cold {cold:.3f}s"
 
 
 # --- the failure that destroys work ----------------------------------------
