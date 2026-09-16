@@ -304,7 +304,9 @@ function regionName(el, used) {
   const heading = el.querySelector("h1, h2, h3, h4");
   const raw = (heading ? heading.textContent : el.getAttribute("aria-label") || "")
     .trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 28);
-  const base = raw || el.tagName.toLowerCase();
+  // Falling back to the tag name gives regions called "h2" and "div", which tell the
+  // model nothing about what it is being asked to rewrite.
+  const base = raw || (el.className || "").trim().split(/\s+/)[0] || "part";
   let name = base, n = 2;
   while (used.has(name)) name = `${base}-${n++}`;
   used.add(name);
@@ -737,13 +739,22 @@ function attachDelegation(doc) {
     const form = e.target.closest("form");
     if (!form) return;
     e.preventDefault();
-    if (isLocal(form)) return;
-    e.stopImmediatePropagation();
-    sendAction({
+    const send = () => sendAction({
       event: "submit",
       elementData: describeElement(e.submitter || form),
       formValues: collectFormState(doc),
     });
+    // Same grace as a click: a form the page claims to handle but does not would
+    // otherwise be a search box that silently does nothing, forever.
+    if (isLocal(form) || isLocal(e.submitter || form)) {
+      const before = doc.body.innerHTML;
+      setTimeout(() => {
+        if (!busy && doc.body.innerHTML === before) send();
+      }, LOCAL_GRACE_MS);
+      return;
+    }
+    e.stopImmediatePropagation();
+    send();
   }, true);
 
   doc.addEventListener("mouseover", (e) => {

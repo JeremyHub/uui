@@ -237,6 +237,23 @@ async def test_a_local_control_that_does_nothing_is_not_a_dead_end(fake, page):
     assert result["calls"] == 1, "a local control with no handler must fall back to a turn"
 
 
+@pytest.mark.asyncio
+async def test_a_form_the_page_does_not_really_handle_still_submits(fake, page):
+    # The same failure as a dead button and worse to live with: a search box that
+    # swallows every query in silence. The click path had a grace period for this; the
+    # submit path returned early with none.
+    shell = SHELL.replace(
+        '<section data-region="aside"><p>untouched aside</p></section>',
+        '<section data-region="aside"><form data-local>'
+        '<input name="q" type="search"><button type="submit">Search</button></form></section>',
+    )
+    scripted(fake, shell=shell)
+    watcher = Watcher(page)
+    await start_app(page, watcher)
+    result = await watcher.turns_taken(lambda: click_text(page, "Search"))
+    assert result["calls"] == 1, "a form with no working handler must fall back to a turn"
+
+
 # --- guessing ahead ---------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -252,7 +269,7 @@ async def test_a_guessed_click_is_far_faster_than_an_unguessed_one(fake, page):
 
     watcher = Watcher(page)
     await start_app(page, watcher, predict=False)
-    cold = await watcher.time_to_stable(lambda: click_text(page, "Styled Tab"))
+    cold = (await watcher.time_to_stable(lambda: click_text(page, "Styled Tab")))["seconds"]
 
     # Guessing only runs after a turn, so enabling it needs a turn to follow.
     await set_prediction(page, True)
@@ -261,7 +278,7 @@ async def test_a_guessed_click_is_far_faster_than_an_unguessed_one(fake, page):
     await watcher.settle(quiet=2.5)
     assert watcher.started > guesses_before + 1, "idle time was not spent guessing"
 
-    warm = await watcher.time_to_stable(lambda: click_text(page, "Open Results"))
+    warm = (await watcher.time_to_stable(lambda: click_text(page, "Open Results")))["seconds"]
     assert warm < cold / 3, f"guessing saved nothing: {warm:.3f}s vs cold {cold:.3f}s"
     fake.chunk_delay = 0.004
 
@@ -290,12 +307,12 @@ async def test_pointing_at_a_control_gets_a_head_start_on_clicking_it(fake, page
     await watcher.settle(quiet=1.5)          # idle guessing covers the first few
 
     # "Choice 5" is past where the idle pass reaches, so this is a genuine cold turn.
-    cold = await watcher.time_to_stable(lambda: click_text(page, "Choice 5"))
+    cold = (await watcher.time_to_stable(lambda: click_text(page, "Choice 5")))["seconds"]
     await watcher.settle(quiet=1.5)
 
     await (await page.frames[1].query_selector('text="Choice 4"')).hover()
     await watcher.settle(quiet=1.5)          # let the hover guess finish
-    hovered = await watcher.time_to_stable(lambda: click_text(page, "Choice 4"))
+    hovered = (await watcher.time_to_stable(lambda: click_text(page, "Choice 4")))["seconds"]
 
     fake.chunk_delay = 0.004
     assert hovered < cold / 3, f"hovering bought nothing: {hovered:.3f}s vs cold {cold:.3f}s"

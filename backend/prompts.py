@@ -45,6 +45,9 @@ Content:
   renders broken.
 
 Interactivity:
+- The screen must be USABLE. Give it the controls this app actually needs -- filters,
+  tabs, a search box, buttons on each item, links to elsewhere. A page of cards with
+  nothing to click is not an app.
 - Any interaction that needs NO new information -- toggling, tabs, show/hide, sorting or
   filtering what is already on screen, counters, dark mode -- MUST be implemented for real
   in a <script> at the end, and its control marked data-local (a bare attribute, no value)

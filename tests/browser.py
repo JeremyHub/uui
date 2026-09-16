@@ -89,23 +89,44 @@ class Watcher:
         raise AssertionError("the screen never changed")
 
     async def time_to_stable(self, action, quiet=0.4, limit=60):
-        """How long after `action` the screen took to finish changing.
+        """How long after `action` the screen took to finish changing, and what it cost.
 
         Not the same as settling: settling also waits for background guessing to finish,
         which starts the moment a turn ends and swamps the thing being measured. What a
         user waits for is the screen to stop moving.
         """
+        # Sample before acting: a control the page handles itself updates the DOM
+        # synchronously on click, so a baseline taken afterwards has already missed it
+        # and the fastest interactions in the app read as "nothing happened".
+        last = await self.html()
         t0 = time.monotonic()
+        calls_before = self.started
         await action()
-        last, last_change = await self.html(), t0
+        last_change, calls_to_first_change = t0, None
         while time.monotonic() < t0 + limit:
             await asyncio.sleep(0.02)
             now = await self.html()
             if now != last:
                 last, last_change = now, time.monotonic()
-            elif time.monotonic() - last_change > quiet:
+                if calls_to_first_change is None:
+                    # Counted at the first change, not at the end: guessing restarts the
+                    # instant a turn lands, and counting that against the click makes a
+                    # prediction hit look like it cost a model call.
+                    calls_to_first_change = self.started - calls_before
+                continue
+            if time.monotonic() - last_change <= quiet:
+                continue
+            # Quiet is only evidence of being finished once something has happened, or
+            # once nothing is outstanding. Before the first change, a quiet second just
+            # means the model has not sent anything yet, and stopping there reports a
+            # slow turn as an instant one that changed nothing.
+            if last_change > t0 or self.in_flight == 0:
                 break
-        return last_change - t0
+        return {
+            "seconds": last_change - t0,
+            "calls": calls_to_first_change if calls_to_first_change is not None
+                     else self.started - calls_before,
+        }
 
     async def turns_taken(self, action, quiet=0.5):
         """Run `action`, then report how many model calls it cost and what changed."""

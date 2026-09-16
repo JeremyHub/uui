@@ -1,8 +1,13 @@
 """Drive the running server through a realistic session and report timings.
 
-Runs the real /turn endpoint, so what it measures is what the browser would feel:
-time to first visible change, time to settle, and how much HTML the model actually had
-to write. Region extraction mirrors what the frontend reads off the live DOM.
+A server-side diagnostic: time per turn, characters written, regions touched. Useful for
+seeing where output is going, and the only place that shows the plan the model produced.
+
+It is NOT what a user experiences, and will read pessimistic. The frontend normalises the
+page before the next turn -- splitting an oversized region, deduplicating ids, backfilling
+untagged blocks -- and none of that happens here, so a page the model returns as one big
+region keeps being patched as one big region for the whole run. Use scripts/e2e.py for
+numbers that describe the app.
 
 Usage:
     uv run uvicorn backend.main:app --port 8000 &
