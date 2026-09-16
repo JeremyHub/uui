@@ -503,6 +503,30 @@ async def test_the_picker_avoids_models_too_small_to_follow_the_format(fake, pag
 
 
 @pytest.mark.asyncio
+async def test_models_this_device_cannot_start_are_not_offered(fake, page):
+    # Half the prebuilt models are f16 quantised and refuse to start without the
+    # shader-f16 extension. Offering one means the refusal arrives after a
+    # gigabyte-scale download -- the most expensive way possible to find out.
+    await page.goto(f"http://localhost:{PORT}/", wait_until="load")
+    listed = await page.evaluate("""(async () => {
+      const m = await import('./transports.js');
+      const entries = [
+        { model_id: 'A-Instruct-q4f16_1-MLC', vram_required_MB: 900 },
+        { model_id: 'A-Instruct-q4f32_1-MLC', vram_required_MB: 1100 },
+        { model_id: 'SomeBase-Model-q4f32_1-MLC', vram_required_MB: 800 },
+      ];
+      return {
+        withF16: m.usableModels(entries, { f16: true }).map(x => x.id),
+        withoutF16: m.usableModels(entries, { f16: false }).map(x => x.id),
+      };
+    })()""")
+    assert "A-Instruct-q4f16_1-MLC" in listed["withF16"]
+    assert "A-Instruct-q4f16_1-MLC" not in listed["withoutF16"]
+    # A base model cannot follow the reply format at all, so it is never offered.
+    assert not any("SomeBase" in m for m in listed["withF16"])
+
+
+@pytest.mark.asyncio
 async def test_a_coder_model_is_preferred_at_the_same_size(fake, page):
     # The whole output is markup, and a coder-tuned model of the same size holds the
     # reply format much better.

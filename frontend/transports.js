@@ -99,25 +99,40 @@ export async function webGPUCapability() {
       (adapter.limits?.maxBufferSize ?? 0) / (1024 * 1024),
       (adapter.limits?.maxStorageBufferBindingSize ?? 0) / (1024 * 1024),
     );
-    return { ok: true, budgetMB: perBufferMB > 0 ? Math.round(perBufferMB * 4) : 2000 };
+    return {
+      ok: true,
+      budgetMB: perBufferMB > 0 ? Math.round(perBufferMB * 4) : 2000,
+      // Half the prebuilt models are f16 quantised and simply refuse to start without
+      // this extension. Finding that out costs a gigabyte-scale download first, so it
+      // is worth asking the adapter up front.
+      f16: Boolean(adapter.features?.has?.("shader-f16")),
+    };
   } catch (e) {
     return { ok: false, budgetMB: 0, why: `WebGPU could not start (${e.message}).` };
   }
 }
 
 /** The prebuilt models, smallest first, annotated with what we can tell about them. */
-export async function listWebLLMModels() {
-  const webllm = await loadWebLLM();
-  const models = webllm.prebuiltAppConfig?.model_list ?? [];
-  return models
+/** The prebuilt entries this device could actually run, smallest first. */
+export function usableModels(entries, { f16 = true } = {}) {
+  return entries
     .map((m) => ({
       id: m.model_id,
       vramMB: m.vram_required_MB ?? null,
       lowResource: Boolean(m.low_resource_required),
+      needsF16: /f16/i.test(m.model_id),
     }))
     // Instruct-tuned only: a base model cannot follow the reply format at all.
     .filter((m) => /instruct|-it-|chat|hermes/i.test(m.id))
+    // Offering a model this device will refuse to start means the refusal arrives after
+    // the download, which is the most expensive way possible to learn it.
+    .filter((m) => f16 || !m.needsF16)
     .sort((a, b) => (a.vramMB ?? 1e9) - (b.vramMB ?? 1e9));
+}
+
+export async function listWebLLMModels(options = {}) {
+  const webllm = await loadWebLLM();
+  return usableModels(webllm.prebuiltAppConfig?.model_list ?? [], options);
 }
 
 // Below roughly this, a model cannot hold to the reply format at all -- it will not

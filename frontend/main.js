@@ -170,7 +170,7 @@ async function populateModels(known = null) {
     const preferred = models.find((m) => /qwen2\.5-coder/.test(m.id)) ?? models[0];
     if (preferred) modelEl.value = preferred.id;
   } else {
-    const models = await listWebLLMModels();
+    const models = await listWebLLMModels({ f16: gpu.f16 });
     const budget = gpu.budgetMB;
     const auto = pickWebLLMModel(models, budget);
     modelEl.replaceChildren(
