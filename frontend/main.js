@@ -134,11 +134,20 @@ function option(value, label, extra = {}) {
   return el;
 }
 
+// Whether this copy of the app has a server behind it. Served as plain static files --
+// from a file:// path, a CDN, someone's GitHub Pages -- there is nothing for Ollama to
+// talk to, and in-tab inference is the only thing that can work.
+let backendReachable = null;
+
 async function ollamaModels() {
   try {
-    const data = await (await fetch("models")).json();
+    const response = await fetch("models");
+    if (!response.ok) throw new Error(String(response.status));
+    const data = await response.json();
+    backendReachable = true;
     return data.models ?? [];
   } catch {
+    backendReachable = false;
     return [];
   }
 }
@@ -146,13 +155,13 @@ async function ollamaModels() {
 // Auto is the default because the honest answer for most people is "whichever one
 // works", and the wrong choice here is a multi-gigabyte download that ends in an
 // out-of-memory error.
-async function populateModels() {
+async function populateModels(known = null) {
   const engine = engineEl.value;
   modelEl.replaceChildren(option("", "loading…"));
   modelEl.disabled = true;
 
   if (engine === "ollama") {
-    const models = await ollamaModels();
+    const models = known ?? await ollamaModels();
     modelEl.replaceChildren(...(models.length
       ? models.map((m) => option(m.id, `${m.id} (${(m.sizeMB / 1000).toFixed(1)} GB)`))
       : [option("", "no models pulled")]));
@@ -203,17 +212,21 @@ async function ensureTransportReady() {
 let gpu = { ok: false, budgetMB: 0 };
 
 async function setupEngineChoice() {
-  gpu = await webGPUCapability();
-  const options = [option("ollama", "Ollama (this machine)")];
+  const [capability, models] = await Promise.all([webGPUCapability(), ollamaModels()]);
+  gpu = capability;
+
+  const options = [];
+  if (backendReachable) options.push(option("ollama", "Ollama (this machine)"));
   if (gpu.ok) options.push(option("webllm", "In this tab (WebGPU)"));
+  if (!options.length) {
+    options.push(option("ollama", "Ollama (this machine)"));
+  }
   engineEl.replaceChildren(...options);
   engineEl.title = gpu.ok ? "Where the model runs" : `Where the model runs. ${gpu.why}`;
-  // Served as static files with no backend there is nothing for Ollama to talk to, so
-  // in-tab is the only thing that can work.
-  engineEl.value = location.protocol === "file:" && gpu.ok ? "webllm" : "ollama";
+  engineEl.value = backendReachable ? "ollama" : (gpu.ok ? "webllm" : "ollama");
   engineEl.addEventListener("change", () => { transport = null; populateModels(); });
   modelEl.addEventListener("change", () => { transport = null; });
-  return populateModels();
+  return populateModels(models);
 }
 
 // --- guessing ahead ---------------------------------------------------------

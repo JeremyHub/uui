@@ -22,6 +22,10 @@ ${apiCatalogue()}
 - Do not ask for data you could just write yourself. A gallery of cat breeds needs no
   network; today's forecast does.`;
 
+// Placed before the interactivity rules rather than after them. A small model weights
+// the end of a prompt most, and appending a ten-line API catalogue there pushed "give
+// this screen the controls it needs" into the middle, where it stopped being followed:
+// pages came back as pretty, unclickable posters.
 export const SHELL_SYSTEM_PROMPT = `You build the body of a live single-page app.
 
 The page already has a stylesheet, written for exactly this job. Use it. Do not write
@@ -66,6 +70,8 @@ Content:
   alt="..."> where SLUG is a word from the thing pictured. Never a local filename -- it
   renders broken.
 
+${LIVE_DATA}
+
 Interactivity:
 - The screen must be USABLE. Give it the controls this app actually needs -- filters,
   tabs, a search box, buttons on each item, links to elsewhere. A page of cards with
@@ -75,7 +81,7 @@ Interactivity:
   in a <script> at the end, and its control marked data-local (a bare attribute, no value)
   on the control itself, never on a whole nav, section or footer.
 - Leave every other control plain; those are handled for you.
-` + LIVE_DATA;
+`;
 
 export const PATCH_SYSTEM_PROMPT = `You update a live single-page app by rewriting ONLY the parts that change.
 
