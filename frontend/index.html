@@ -68,6 +68,19 @@ const bootstrapEl = document.getElementById("bootstrap");
 const speculateEl = document.getElementById("speculate");
 
 const delegated = new WeakSet();   // documents whose click/submit delegation is live
+
+// The stylesheet generated pages are written against. Fetched once and inlined into each
+// document rather than linked: a <link> would leave the first paint briefly unstyled,
+// which is exactly the moment this app is trying to make look good.
+let baseCss = "";
+const baseCssReady = fetch("/base.css").then((r) => r.text()).then((css) => { baseCss = css; });
+
+function documentHead(title) {
+  return '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">' +
+         '<meta name="viewport" content="width=device-width,initial-scale=1">' +
+         `<title>${title.replace(/[<&]/g, "")}</title>` +
+         `<style data-uui-base>${baseCss}</style></head><body>`;
+}
 let concept = "";
 const recent = [];            // one-line history, last few turns
 const log = [];               // debug transcript
@@ -120,7 +133,10 @@ function buildScreen(doc) {
     id: el.getAttribute("data-region"),
     html: nestedRegionsElided(el),
   }));
-  const styles = [...doc.querySelectorAll("style")].map((s) => s.textContent).join("\n");
+  // Only the page's own theme block. The base stylesheet is the app's and the model
+  // already knows it, so shipping 6KB of it in every prompt would be pure waste.
+  const styles = [...doc.querySelectorAll("style:not([data-uui-base])")]
+    .map((el) => el.textContent).join("\n");
   return { regions, styles };
 }
 
@@ -180,6 +196,11 @@ function describeElement(el) {
 // innerHTML never runs <script>, so scripts in a freshly patched region are re-created
 // as real nodes. Without this, a region that ships its own local interactivity would
 // render but sit dead.
+function errorRegion(message) {
+  return '<section data-region="uui-error"><div class="panel"><h3>Something went wrong</h3>' +
+         `<p class="muted">${String(message).replace(/[<&]/g, "")}</p></div></section>`;
+}
+
 function runScripts(root, doc) {
   root.querySelectorAll("script").forEach((old) => {
     const s = doc.createElement("script");
@@ -407,7 +428,7 @@ function applyEvents(doc, events, actionLabel) {
     else if (msg.type === "region") applyRegion(doc, msg.id, msg.html);
     else if (msg.type === "screen") applyScreen(doc, msg.html);
     else if (msg.type === "error") {
-      applyRegion(doc, "error", `<pre style="color:#c00;white-space:pre-wrap">${msg.message}</pre>`);
+      applyRegion(doc, "uui-error", errorRegion(msg.message));
     }
   }
   if (plan) recent.push(`${actionLabel} -> ${plan}`);
@@ -445,7 +466,7 @@ async function sendAction(action) {
       else if (msg.type === "region") { applyRegion(doc, msg.id, msg.html); touched.push(msg.id); }
       else if (msg.type === "screen") { applyScreen(doc, msg.html); touched.push("(whole screen)"); }
       else if (msg.type === "error") {
-        applyRegion(doc, "error", `<pre style="color:#c00;white-space:pre-wrap">${msg.message}</pre>`);
+        applyRegion(doc, "uui-error", errorRegion(msg.message));
       }
     }
   } catch (e) {
@@ -471,6 +492,7 @@ async function startFromConcept() {
   busy = true;
   startTimer("building");
 
+  await baseCssReady;
   const doc = appEl.contentDocument;
   // document.open() reuses the same document object but strips every listener on it,
   // so the "already delegated" guard has to be cleared or delegation silently never
@@ -486,16 +508,20 @@ async function startFromConcept() {
   // if one happened, run the scripts again once the document is complete.
   let scriptFailed = false;
   appEl.contentWindow.addEventListener("error", () => { scriptFailed = true; }, true);
+  // The document, its head and the stylesheet are the app's, and go in immediately --
+  // so the page is styled and readable before the model has written a word of content.
+  doc.write(documentHead(concept));
   let wrote = false;
   try {
     for await (const msg of streamTurn({ concept, mode: "shell", action: { event: "start", concept } })) {
       if (msg.type === "screen_delta") { doc.write(msg.text); wrote = true; }
-      else if (msg.type === "error") doc.write(`<pre style="color:#c00">${msg.message}</pre>`);
+      else if (msg.type === "error") doc.write(errorRegion(msg.message));
     }
   } catch (e) {
-    doc.write(`<pre style="color:#c00">${e.message}</pre>`);
+    doc.write(errorRegion(e.message));
   }
-  if (!wrote) doc.write("<p>the model produced nothing</p>");
+  if (!wrote) doc.write(errorRegion("the model produced nothing"));
+  doc.write("</body></html>");
   doc.close();
   try {
     if (scriptFailed) runScripts(doc.body, doc);

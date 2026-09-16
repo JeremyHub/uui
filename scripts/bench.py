@@ -10,6 +10,7 @@ Usage:
 """
 
 import argparse
+import os
 import json
 import re
 import sys
@@ -20,7 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from backend.screen import find_regions  # noqa: E402
 
-SERVER = "http://localhost:8000"
+SERVER = os.environ.get("UUI_SERVER", "http://localhost:8765")
 STYLE_RE = re.compile(r"<style[^>]*>(.*?)</style>", re.DOTALL)
 
 
@@ -95,7 +96,8 @@ def main():
     events, total, first = stream(
         {"concept": args.concept, "mode": "shell", "action": {"event": "start", "concept": args.concept}}
     )
-    doc = next((e["html"] for e in events if e["type"] == "screen_end"), "")
+    # The shell streams body content now; the document around it belongs to the app.
+    doc = "".join(e["text"] for e in events if e["type"] == "screen_delta")
     (out / "0_shell.html").write_text(doc)
     regions, styles = split(doc)
     print(f"shell                    {total:6.1f}s  first paint {first or 0:5.1f}s  "

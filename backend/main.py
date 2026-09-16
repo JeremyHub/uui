@@ -41,7 +41,6 @@ KEEP_ALIVE = os.environ.get("UUI_KEEP_ALIVE", "30m")
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
 FENCE_LINE_RE = re.compile(r"^\s*```[a-zA-Z0-9]*\s*$")
-DOCUMENT_RE = re.compile(r"<(?:!doctype|html)\b.*</html>", re.IGNORECASE | re.DOTALL)
 BODY_WRAP_RE = re.compile(r"^<body\b[^>]*>|</body>$", re.IGNORECASE)
 
 app = FastAPI()
@@ -70,6 +69,14 @@ class OllamaError(Exception):
 @app.get("/")
 async def index():
     return FileResponse(FRONTEND_DIR / "index.html")
+
+
+@app.get("/base.css")
+async def base_css():
+    # The design system generated pages are written against. Serving it rather than
+    # having the model write one saves ~350 output tokens on every first screen, and
+    # keeps it out of every patch prompt thereafter.
+    return FileResponse(FRONTEND_DIR / "base.css", media_type="text/css")
 
 
 async def ollama_stream(client, model, system, user, num_predict, temperature):
@@ -215,19 +222,37 @@ async def turn(req: Turn):
     return StreamingResponse(stream(), media_type="application/x-ndjson")
 
 
-TRAILING_JUNK_RE = re.compile(r"(?:\s|`{3,}[a-zA-Z0-9]*)+$")
-# Enough to hold back a closing fence and its surrounding whitespace.
-TAIL_HOLDBACK = 16
+TRAILING_JUNK_RE = re.compile(r"(?:\s|`{3,}[a-zA-Z0-9]*|</body>|</html>)+$", re.IGNORECASE)
+# Enough to hold back a closing fence, a </body></html>, and their whitespace.
+TAIL_HOLDBACK = 24
+BODY_OPEN_RE = re.compile(r"<body\b[^>]*>", re.IGNORECASE)
+
+
+def body_content_start(text: str) -> int:
+    """Where the model's actual body content begins, or -1 if it is not clear yet.
+
+    The model is asked for body content and nothing else, and mostly complies -- but it
+    also opens with "Sure, here it is:" or wraps the lot in a full document. Since the
+    reply is streamed into the iframe's parser, junk has to be identified before it is
+    written rather than cleaned up afterwards.
+    """
+    lower = text.lower()
+    if (i := lower.find("<section")) != -1:
+        return i
+    if (m := BODY_OPEN_RE.search(text)):
+        return m.end()
+    # No structural landmark yet. Once enough has arrived that none is coming, fall back
+    # to the first tag of any kind rather than stalling the stream forever.
+    if len(text) > 800:
+        return text.find("<") if "<" in text else 0
+    return -1
 
 
 async def run_shell(client, req: Turn):
-    """Pass the document through as it is generated, so the iframe paints progressively.
+    """Stream the body as it is generated, so the page fills in rather than appearing.
 
-    Streaming into the parser is what buys a ~0.2s first paint instead of a ~20s one, but
-    it also means anything the model writes is on the page before it can be inspected. So
-    the two ends get held back: nothing is emitted until the document actually starts, and
-    the last few characters are withheld until the stream ends, because a model that wraps
-    its answer in ```html leaves the closing fence sitting visibly on the finished page.
+    The document around it -- doctype, head, stylesheet -- belongs to the app and is
+    already on screen before this is called, so the model writes content and nothing else.
     """
     model = req.model or SHELL_MODEL
     user = f"APP CONCEPT:\n{req.concept or 'a simple demo app'}"
@@ -235,45 +260,40 @@ async def run_shell(client, req: Turn):
 
     parts = []
     pending = ""
-    started_doc = False
-    async for piece in ollama_stream(client, model, SHELL_SYSTEM_PROMPT, user, 3000, 0.7):
+    started = False
+    async for piece in ollama_stream(client, model, SHELL_SYSTEM_PROMPT, user, 2200, 0.7):
         parts.append(piece)
-        if not started_doc:
+        if not started:
             joined = "".join(parts)
-            lower = joined.lower()
-            idx = min(
-                (i for i in (lower.find("<!doctype"), lower.find("<html")) if i != -1),
-                default=-1,
-            )
+            idx = body_content_start(joined)
             if idx == -1:
                 continue
-            started_doc = True
-            pending = joined[idx:]
+            started, pending = True, joined[idx:]
         else:
             pending += piece
+        # Hold back the tail: a model that wraps its answer in ```html would otherwise
+        # leave the closing fence rendered as text at the bottom of the finished page.
         if len(pending) > TAIL_HOLDBACK:
             yield {"type": "screen_delta", "text": pending[:-TAIL_HOLDBACK]}
             pending = pending[-TAIL_HOLDBACK:]
 
     full = "".join(parts)
-    if not started_doc:
-        # The model ignored the format entirely. Better to show whatever it said than
-        # to leave a blank screen with no explanation.
-        pending = f"<!DOCTYPE html><html><body><section data-region=\"main\">{full}</section></body></html>"
-    yield {"type": "screen_delta", "text": TRAILING_JUNK_RE.sub("", pending)}
-
-    match = DOCUMENT_RE.search(full)
-    yield {"type": "screen_end", "html": match.group(0) if match else full}
+    if not started:
+        # The model ignored the format entirely. Better to show what it said than to
+        # leave a blank screen with nothing to explain it.
+        pending = f'<section data-region="main">{full}</section>'
+    tail = TRAILING_JUNK_RE.sub("", pending)
+    yield {"type": "screen_delta", "text": tail}
+    yield {"type": "screen_end"}
 
 
 def guard_screen(event: dict, req: Turn) -> dict:
     """Stop a malformed #screen from wiping the app.
 
-    A screen swap replaces the entire body, so getting it wrong is the one failure in
-    this design that destroys work rather than just looking wrong. The format asks for
-    <section data-region> blocks; a reply with none of them is a region's worth of
-    content that the model mislabelled, so treat it as one -- aimed at the biggest
-    region, which is the main content area on essentially every generated page.
+    A screen swap replaces all the body content, so getting it wrong is the one failure
+    in this design that destroys work rather than just looking wrong. The format asks for
+    <section data-region> blocks; a reply with none of them is a region's worth of content
+    that the model mislabelled, so treat it as one.
     """
     if event["type"] != "screen" or "data-region" in event["html"]:
         return event

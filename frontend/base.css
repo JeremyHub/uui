@@ -1,0 +1,178 @@
+/* The design system generated pages are written against.
+ *
+ * Every first screen used to spend ~350 tokens writing its own CSS -- roughly six
+ * seconds of a twenty-second generation -- and then every patch prompt carried that CSS
+ * back to the model so its markup would match. Both costs are gone if the stylesheet is
+ * something the app already has: the model writes semantic HTML against a known
+ * vocabulary, and a 3B model picks classes far more reliably than it writes typography.
+ *
+ * Apps still differ, but through tokens rather than whole stylesheets. A generated page
+ * sets --accent, --bg, --font and --radius in a handful of characters and looks like
+ * itself.
+ */
+
+:root {
+  --accent: #3b5bdb;
+  --accent-contrast: #fff;
+  --bg: #fbfbfd;
+  --surface: #fff;
+  --border: #e3e5ea;
+  --text: #1a1b1f;
+  --muted: #6b7280;
+  --radius: 10px;
+  --gap: 16px;
+  --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-display: var(--font);
+  --shadow: 0 1px 2px rgba(16, 18, 27, .06), 0 4px 16px rgba(16, 18, 27, .06);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14151a; --surface: #1c1e25; --border: #2c2f38;
+    --text: #eceef3; --muted: #9aa1ae;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 4px 16px rgba(0, 0, 0, .3);
+  }
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body { height: 100%; }
+
+body {
+  margin: 0;
+  font-family: var(--font);
+  font-size: 16px;
+  line-height: 1.55;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Sections are the page's blocks. They stack and breathe without being told to. */
+body > * { padding: 20px clamp(16px, 4vw, 40px); }
+body > * + * { border-top: 1px solid var(--border); }
+
+h1, h2, h3, h4 { font-family: var(--font-display); line-height: 1.2; margin: 0 0 .5em; font-weight: 650; }
+h1 { font-size: clamp(1.6rem, 1.1rem + 1.8vw, 2.4rem); letter-spacing: -.02em; }
+h2 { font-size: 1.35rem; letter-spacing: -.01em; }
+h3 { font-size: 1.1rem; }
+p { margin: 0 0 .9em; }
+p:last-child, h1:last-child, h2:last-child, h3:last-child { margin-bottom: 0; }
+small, .muted { color: var(--muted); font-size: .875rem; }
+a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+img { max-width: 100%; height: auto; display: block; border-radius: calc(var(--radius) - 4px); }
+hr { border: 0; border-top: 1px solid var(--border); margin: var(--gap) 0; }
+
+/* --- layout primitives --- */
+.row { display: flex; align-items: center; gap: var(--gap); flex-wrap: wrap; }
+.row.between { justify-content: space-between; }
+.stack { display: flex; flex-direction: column; gap: var(--gap); }
+.grid { display: grid; gap: var(--gap); grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); }
+.grid.wide { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
+.spacer { flex: 1; }
+
+/* --- surfaces --- */
+.card, .panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--gap);
+}
+.card { box-shadow: var(--shadow); }
+.media { aspect-ratio: 3 / 2; object-fit: cover; width: 100%; }
+
+/* --- laying out naive markup ---
+ *
+ * Handing the model a class vocabulary does not mean it uses it. It will drop five
+ * <img> tags straight into a section with no .grid and no .media, and the result is a
+ * page where one photo fills the viewport. Since the stylesheet belongs to the app now,
+ * that is fixable once, here, for every app it will ever generate -- which is most of
+ * the argument for owning the stylesheet in the first place.
+ */
+
+/* No image dominates the page, however it was marked up. */
+[data-region] img { max-height: 320px; object-fit: cover; }
+.card img, .panel img { width: 100%; }
+
+/* A block holding several cards is a grid whether or not anyone said so. */
+[data-region]:has(> .card + .card),
+[data-region]:has(> article + article) {
+  display: grid; gap: var(--gap); align-items: start;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+}
+[data-region]:has(> .card + .card) > :not(.card),
+[data-region]:has(> article + article) > :not(article) { grid-column: 1 / -1; }
+
+/* So is a run of loose images. */
+[data-region]:has(> img + img), .card:has(> img + img), .panel:has(> img + img) {
+  display: grid; gap: 10px; align-items: start;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+}
+[data-region]:has(> img + img) > :not(img),
+.card:has(> img + img) > :not(img), .panel:has(> img + img) > :not(img) { grid-column: 1 / -1; }
+
+/* --- controls --- */
+.btn, button, input[type="submit"] {
+  font: inherit; font-weight: 550;
+  padding: 9px 16px;
+  border-radius: calc(var(--radius) - 3px);
+  border: 1px solid var(--border);
+  background: var(--surface); color: var(--text);
+  cursor: pointer;
+  transition: background .12s ease, border-color .12s ease, transform .06s ease;
+}
+.btn:hover, button:hover { border-color: var(--accent); }
+.btn:active, button:active { transform: translateY(1px); }
+.btn.primary, button.primary, input[type="submit"] {
+  background: var(--accent); border-color: var(--accent); color: var(--accent-contrast);
+}
+.btn.ghost, button.ghost { background: transparent; border-color: transparent; }
+
+.chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 12px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--surface);
+  cursor: pointer; font-size: .9rem; user-select: none;
+}
+.chip[aria-pressed="true"], .chip.active, .tab.active {
+  background: var(--accent); border-color: var(--accent); color: var(--accent-contrast);
+}
+.tag { display: inline-block; padding: 2px 9px; border-radius: 999px; background: var(--border); font-size: .8rem; color: var(--muted); }
+
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); }
+.tab { padding: 9px 14px; cursor: pointer; border-radius: var(--radius) var(--radius) 0 0; }
+
+input, select, textarea {
+  font: inherit; color: var(--text);
+  padding: 9px 12px;
+  border: 1px solid var(--border); border-radius: calc(var(--radius) - 3px);
+  background: var(--surface);
+}
+input:focus-visible, select:focus-visible, textarea:focus-visible,
+button:focus-visible, .btn:focus-visible, .chip:focus-visible, .tab:focus-visible,
+a:focus-visible, [tabindex]:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
+input[type="search"], input[type="text"], input[type="email"] { min-width: min(100%, 280px); }
+label { font-weight: 500; }
+.field { display: flex; flex-direction: column; gap: 5px; }
+
+/* --- data --- */
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+th { font-size: .82rem; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+tbody tr:hover { background: color-mix(in srgb, var(--accent) 5%, transparent); }
+
+ul.clean, ol.clean { list-style: none; padding: 0; margin: 0; }
+.list { display: flex; flex-direction: column; }
+.list > * { padding: 12px 0; border-bottom: 1px solid var(--border); }
+.list > *:last-child { border-bottom: 0; }
+
+.stat { font-size: clamp(1.5rem, 1.2rem + 1vw, 2.1rem); font-weight: 680; letter-spacing: -.02em; line-height: 1.1; }
+
+/* Regions fade in when they are replaced, so an update reads as a change to one part
+ * of the page rather than the page flickering. */
+@media (prefers-reduced-motion: no-preference) {
+  [data-region] { animation: uui-in .22s ease-out; }
+  @keyframes uui-in { from { opacity: .4; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+}

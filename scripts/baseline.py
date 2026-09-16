@@ -16,7 +16,7 @@ import sys
 import time
 import urllib.request
 
-OLLAMA_URL = "http://localhost:11434"
+OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 FENCE_RE = re.compile(r"^\s*```[a-zA-Z0-9]*\n?|\n?```\s*$")
 DOCUMENT_RE = re.compile(r"<(?:!doctype|html)\b.*</html>", re.IGNORECASE | re.DOTALL)
 

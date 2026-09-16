@@ -35,31 +35,42 @@ def of_type(evs, kind):
 
 # --- the first screen -------------------------------------------------------
 
-def test_shell_streams_the_document_before_it_is_finished(app):
+def test_shell_streams_the_body_before_it_is_finished(app):
     fake, client = app
-    fake.default = "<!DOCTYPE html><html><body><section data-region='a'>hi</section></body></html>"
+    fake.default = "<section data-region='a'>" + "hi " * 40 + "</section>"
     evs = events(client, mode="shell", concept="a test app")
     deltas = of_type(evs, "screen_delta")
-    assert len(deltas) > 1, "a document arriving in one piece is not being streamed"
-    assert "".join(d["text"] for d in deltas).startswith("<!DOCTYPE html>")
+    assert len(deltas) > 1, "content arriving in one piece is not being streamed"
+    assert "".join(d["text"] for d in deltas).startswith("<section")
 
 
-def test_shell_drops_commentary_before_the_document(app):
+def test_shell_drops_commentary_before_the_content(app):
     fake, client = app
-    fake.default = "Sure! Here is the HTML:\n<!DOCTYPE html><html><body>hi</body></html>"
+    fake.default = 'Sure! Here is the HTML:\n<section data-region="a">hi</section>'
     text = "".join(d["text"] for d in of_type(events(client, mode="shell"), "screen_delta"))
-    assert text.startswith("<!DOCTYPE html>")
+    assert text.startswith("<section")
     assert "Sure!" not in text
+
+
+def test_shell_unwraps_a_full_document_if_it_gets_one(app):
+    # The model is asked for body content; when it writes a whole document anyway, the
+    # doctype and head must not end up inside the body the app already opened.
+    fake, client = app
+    fake.default = ("<!DOCTYPE html><html><head><title>x</title></head><body>"
+                    '<section data-region="a">hi</section></body></html>')
+    text = "".join(d["text"] for d in of_type(events(client, mode="shell"), "screen_delta"))
+    assert text.startswith("<section")
+    assert "<head" not in text and "</html>" not in text
 
 
 def test_shell_keeps_a_closing_fence_off_the_page(app):
     # The document is streamed straight into the iframe's parser, so a trailing fence
     # would otherwise be rendered as visible text at the bottom of the finished app.
     fake, client = app
-    fake.default = "```html\n<!DOCTYPE html><html><body>hi</body></html>\n```\n"
+    fake.default = '```html\n<section data-region="a">hi</section>\n```\n'
     text = "".join(d["text"] for d in of_type(events(client, mode="shell"), "screen_delta"))
     assert "```" not in text
-    assert text.rstrip().endswith("</html>")
+    assert text.rstrip().endswith("</section>")
 
 
 def test_shell_shows_something_when_the_model_ignores_the_format(app):
@@ -177,9 +188,9 @@ def test_the_prompt_carries_region_markup_not_a_summary(app):
     assert "cats" in prompt and "Next" in prompt
 
 
-def test_the_first_screen_is_not_told_about_regions_it_has_none(app):
+def test_the_first_screen_prompt_carries_the_concept(app):
     fake, client = app
-    fake.default = "<!DOCTYPE html><html><body>x</body></html>"
+    fake.default = '<section data-region="a">x</section>' 
     events(client, mode="shell", concept="a test app")
     prompt = "\n".join(m["content"] for m in fake.requests[-1]["messages"])
     assert "a test app" in prompt

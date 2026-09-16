@@ -16,17 +16,20 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
-from tests.browser import Watcher, click_text, set_prediction, start_app
+from tests.browser import Watcher, click_text, set_prediction
+from tests import browser as browser_helpers
 from tests.fake_ollama import FakeOllama
 
 ROOT = Path(__file__).resolve().parent.parent
-PORT = 8765
 
-SHELL = """<!DOCTYPE html><html><head><style>
-  body { margin: 0; font-family: sans-serif; }
-  .tab { cursor: pointer; padding: 8px; }
-  .plain { padding: 8px; }
-</style></head><body>
+# Chosen at runtime: a fixed port silently hands the whole suite to whatever dev server
+# happens to be running, which looks like a dozen baffling failures rather than a clash.
+with socket.socket() as _s:
+    _s.bind(("127.0.0.1", 0))
+    PORT = _s.getsockname()[1]
+
+# Body content only -- the document, its head and the stylesheet belong to the app.
+SHELL = """<style>.tab { cursor: pointer; }</style>
 <section data-region="nav">
   <button id="go">Open Results</button>
   <div class="tab" id="styled">Styled Tab</div>
@@ -36,12 +39,11 @@ SHELL = """<!DOCTYPE html><html><head><style>
 <section data-region="aside"><p>untouched aside</p></section>
 <script>
   document.addEventListener('DOMContentLoaded', () => {
-    document.getElementById('counter').addEventListener('click', (e) => {
+    document.getElementById('counter')?.addEventListener('click', (e) => {
       e.target.textContent = 'Clicked';
     });
   });
-</script>
-</body></html>"""
+</script>"""
 
 SHELL_WITH_LOCAL = SHELL.replace(
     '<section data-region="aside"><p>untouched aside</p></section>',
@@ -63,6 +65,11 @@ def free_port_ready(port, timeout=20):
                 return True
         time.sleep(0.1)
     return False
+
+
+async def start_app(page, watcher, **kw):
+    kw.setdefault("url", f"http://localhost:{PORT}/")
+    await browser_helpers.start_app(page, watcher, **kw)
 
 
 @pytest.fixture(scope="module")
@@ -97,7 +104,7 @@ async def page(server):
 def scripted(fake, shell=SHELL, patch=PATCH):
     fake.rules.clear()
     fake.fail_with = None
-    fake.on("COMPLETE HTML DOCUMENT", shell)
+    fake.on("body of a live single-page app", shell)
     fake.default = patch
 
 
@@ -118,6 +125,7 @@ async def test_the_screen_paints_before_the_model_has_finished(fake, page):
     scripted(fake)
     watcher = Watcher(page)
     await page.goto(f"http://localhost:{PORT}/", wait_until="load")
+    await set_prediction(page, False)
     await page.fill("#concept", "a test app")
     await page.click("#start-btn")
 
