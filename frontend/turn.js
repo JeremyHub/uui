@@ -34,11 +34,11 @@ export function bodyContentStart(text) {
   return -1;
 }
 
-export function buildPatchMessage({ concept, doc, action, recent }) {
+export function buildPatchMessage({ concept, doc, action, memory }) {
   const parts = [`APP CONCEPT:\n${concept || "(unspecified)"}`];
-  if (recent?.length) {
-    parts.push("RECENTLY:\n" + recent.slice(-3).map((r) => `- ${r}`).join("\n"));
-  }
+  // What the session has established so far. The screen shows the present; this is the
+  // only reason a later turn can still know what the user said five screens ago.
+  if (memory) parts.push(memory);
   parts.push("SCREEN:\n" + (renderScreen(doc) || "(nothing yet)"));
   parts.push(`USER ACTION:\n${JSON.stringify(action, null, 2)}`);
   return parts.join("\n\n");
@@ -134,8 +134,8 @@ async function* patchOnce({ transport, system, user, doc, action, signal }) {
   for (const event of parser.finish()) yield guardScreen(event, { doc, action });
 }
 
-export async function* runPatch({ transport, doc, concept, action, recent, signal }) {
-  const user = buildPatchMessage({ concept, doc, action, recent });
+export async function* runPatch({ transport, doc, concept, action, memory, signal }) {
+  const user = buildPatchMessage({ concept, doc, action, memory });
   yield { type: "phase", name: "updating" };
 
   let produced = false;

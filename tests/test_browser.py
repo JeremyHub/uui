@@ -362,6 +362,68 @@ async def test_guessing_is_not_cancelled_by_the_page_changing_under_the_cursor(f
     )
 
 
+# --- remembering the session ------------------------------------------------
+
+FORM_SHELL = (
+    '<section data-region="nav">'
+    + "".join(f'<button id="b{i}">Choice {i}</button>' for i in range(4))
+    + "</section>"
+    '<section data-region="entry"><form><input name="nickname" type="text">'
+    '<button type="submit">Save</button></form></section>'
+    '<section data-region="results"><p>original results</p></section>'
+)
+
+
+def prompts_sent(fake):
+    return ["\n".join(m["content"] for m in r["messages"]) for r in fake.requests]
+
+
+@pytest.mark.asyncio
+async def test_what_the_user_typed_survives_later_turns(fake, page):
+    # A turn sees the screen and the click that caused it. Anything the user established
+    # earlier is no longer on screen, so without a record the app starts contradicting
+    # itself exactly when a session gets long enough to be worth having.
+    scripted(fake, shell=FORM_SHELL)
+    watcher = Watcher(page)
+    await start_app(page, watcher)
+
+    await page.frames[1].fill('input[name="nickname"]', "Wintermute")
+    await watcher.turns_taken(lambda: click_text(page, "Save"))
+    for i in range(3):
+        await watcher.turns_taken(lambda i=i: click_text(page, f"Choice {i}"))
+
+    assert "Wintermute" in prompts_sent(fake)[-1], (
+        "three turns later the app no longer knows what the user entered"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_long_session_does_not_grow_the_prompt_without_bound(fake, page):
+    # Keeping every turn verbatim is the obvious way to stay consistent and the wrong
+    # one: prompts grow forever, and on a local model that is paid for on every turn.
+    fake.rules.clear()
+    fake.fail_with = None
+    fake.on("body of a live single-page app", FORM_SHELL)
+    fake.on("keep the running memory", "The user has been clicking through the choices.")
+    fake.default = PATCH
+
+    watcher = Watcher(page)
+    await start_app(page, watcher)
+    for i in range(14):
+        await watcher.turns_taken(lambda i=i: click_text(page, f"Choice {i % 4}"))
+    await watcher.settle(quiet=1.5)
+
+    assert any("keep the running memory" in p for p in prompts_sent(fake)), (
+        "the session was never compacted, so the prompt only ever grows"
+    )
+    patch_prompts = [p for p in prompts_sent(fake) if "SCREEN:" in p]
+    early, late = patch_prompts[1], patch_prompts[-1]
+    assert late.count("RECENTLY") <= 1
+    assert len(late) < len(early) * 2, (
+        f"prompt grew from {len(early)} to {len(late)} chars over a long session"
+    )
+
+
 # --- the failure that destroys work ----------------------------------------
 
 @pytest.mark.asyncio

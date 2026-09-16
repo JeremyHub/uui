@@ -8,6 +8,7 @@ import {
   describeElement, ensureRegions, errorRegion, findControl, isClickable, isLocal,
   openRegion, repairImages, runScripts, splitOversizedRegions,
 } from "./dom.js";
+import { Journal } from "./journal.js";
 import { SHELL_MAX_TOKENS, runPatch, runShell } from "./turn.js";
 import {
   createOllamaTransport, createWebLLMTransport, listWebLLMModels, pickWebLLMModel,
@@ -24,13 +25,17 @@ const modelEl = document.getElementById("model");
 
 const delegated = new WeakSet();   // documents whose click/submit delegation is live
 let concept = "";
-const recent = [];                 // one-line history, last few turns
+const journal = new Journal();     // what the session has established, compacted as it grows
 const log = [];                    // debug transcript
 let busy = false;
 let transport = null;
 
 function renderTranscript() {
-  transcriptEl.textContent = JSON.stringify({ concept, engine: transport?.label, recent, log: log.slice(-12) }, null, 2);
+  transcriptEl.textContent = JSON.stringify({
+    concept, engine: transport?.label,
+    memory: journal.summary, recent: journal.entries.map((e) => journal.line(e)),
+    log: log.slice(-12),
+  }, null, 2);
 }
 
 // --- the loading overlay ----------------------------------------------------
@@ -250,7 +255,7 @@ async function generatePrediction(doc, el, myRun) {
   const events = [];
   try {
     for await (const event of runPatch({
-      transport, doc, concept, action, recent, signal: specAbort.signal,
+      transport, doc, concept, action, memory: journal.toPrompt(), signal: specAbort.signal,
     })) {
       if (myRun !== specRun) return false;
       events.push(event);
@@ -267,10 +272,18 @@ async function generatePrediction(doc, el, myRun) {
   return true;
 }
 
-// Idle-time guessing: work through the most prominent controls after a turn settles.
+// Idle-time work, in priority order: keep the session's memory from growing without
+// bound, then guess at the next click. Folding the journal is one short call and it
+// shrinks every prompt after it, so it earns its place ahead of the guessing.
 async function speculate(doc) {
-  if (!speculateEl.checked || !transport) return;
+  if (!transport) return;
   const myRun = ++specRun;
+  if (journal.needsCompaction()) {
+    await journal.compact(transport);
+    renderTranscript();
+    if (myRun !== specRun) return;
+  }
+  if (!speculateEl.checked) return;
   for (const el of speculationTargets(doc)) {
     if (myRun !== specRun) return;
     await generatePrediction(doc, el, myRun);
@@ -308,19 +321,13 @@ function applyEvent(doc, event, touched) {
   else if (event.type === "error") applyRegion(doc, "uui-error", errorRegion(event.message));
 }
 
-function applyEvents(doc, events, label) {
+function applyEvents(doc, events) {
   let plan = "";
   for (const event of events) {
     if (event.type === "plan") plan = event.text;
     else applyEvent(doc, event);
   }
-  if (plan) recent.push(`${label} -> ${plan}`);
   return plan;
-}
-
-function rememberTurn(label, plan) {
-  if (plan) recent.push(`${label} -> ${plan}`);
-  if (recent.length > 6) recent.splice(0, recent.length - 6);
 }
 
 async function sendAction(action) {
@@ -334,7 +341,8 @@ async function sendAction(action) {
   if (predictions.has(key)) {
     // Already generated while the user was deciding: no model call at all.
     timerStart = performance.now();
-    const plan = applyEvents(doc, predictions.get(key), label);
+    const plan = applyEvents(doc, predictions.get(key));
+    journal.add({ label, plan, inputs: action.formValues });
     predictions.clear();
     stopTimer("instant (predicted)");
     log.push({ action: label, plan, predicted: true });
@@ -350,7 +358,7 @@ async function sendAction(action) {
   const touched = [];
   let plan = "", written = 0;
   try {
-    for await (const event of runPatch({ transport, doc, concept, action, recent })) {
+    for await (const event of runPatch({ transport, doc, concept, action, memory: journal.toPrompt() })) {
       if (event.type === "plan") { plan = event.text; timerLabel = plan.slice(0, 80); loading.detail(plan); }
       else applyEvent(doc, event, touched);
       written += (event.html ?? "").length;
@@ -364,7 +372,7 @@ async function sendAction(action) {
     loading.hide();
   }
   const secs = stopTimer(touched.length ? ` · changed ${touched.join(", ")}` : " · no change");
-  rememberTurn(label, plan);
+  journal.add({ label, plan, inputs: action.formValues });
   log.push({ action: label, plan, touched, secs });
   renderTranscript();
   busy = false;
