@@ -43,12 +43,15 @@ export function splitCompleteElements(text) {
     if (VOID_TAGS.has(tag)) continue;
     depth += match[1] ? -1 : 1;
     if (depth > 0) continue;
-    let end = text.indexOf(">", TAG_RE.lastIndex);
-    end = end !== -1 ? end + 1 : TAG_RE.lastIndex;
-    finished.push(text.slice(start, end));
-    start = end;
+    const close = text.indexOf(">", TAG_RE.lastIndex);
+    // The tag that would close this element is still being written -- "</div" with no
+    // ">" yet. Cutting here emits a broken half-tag into the page, so wait instead: the
+    // rest of it is in the next piece.
+    if (close === -1) break;
+    finished.push(text.slice(start, close + 1));
+    start = close + 1;
     depth = 0;
-    TAG_RE.lastIndex = end;
+    TAG_RE.lastIndex = start;
   }
   return { finished, remainder: text.slice(start) };
 }
