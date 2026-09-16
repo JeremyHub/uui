@@ -27,15 +27,22 @@ Classes to build from:
   lists      .list  ul.clean
 Plain <h1>-<h4>, <p>, <table>, <input>, <select>, <button>, <a> are already styled.
 
-Theme: you may include ONE small <style> setting variables to give this app its own look:
+Theme: you may include ONE small <style> that sets variables and nothing else:
 :root { --accent: #b4541f; --bg: #fdf8f3; --radius: 14px; --font: Georgia, serif; }
-Nothing else belongs in it.
+No selectors, no layout, no text-align, no widths. The stylesheet handles all of that.
 
 Content:
+- The page is FULL on first render. Write the actual rows, cards, entries and figures --
+  a real expense list with real amounts, not an empty tracker showing $0.00 waiting for
+  input. Never build a shell for a script to fill in later.
 - Everything specific and invented in full. Real names, real numbers, real prose.
   Never "Item 1", "Breed 2", "Product Name", "Lorem ipsum", "Coming soon", "TBD".
-- Photos: <img class="media" src="https://picsum.photos/seed/SLUG/600/400" alt="..."> where
-  SLUG is a word from the thing pictured. Never a local filename -- it renders broken.
+- Photos ONLY where the subject is genuinely visual -- a gallery, a product, a place, a
+  person. A dashboard, a table of figures or a list of settings needs none, and stock
+  photos stapled onto one make it look worse.
+  When you do use one: <img class="media" src="https://picsum.photos/seed/SLUG/600/400"
+  alt="..."> where SLUG is a word from the thing pictured. Never a local filename -- it
+  renders broken.
 
 Interactivity:
 - Any interaction that needs NO new information -- toggling, tabs, show/hide, sorting or

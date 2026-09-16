@@ -66,9 +66,13 @@ hr { border: 0; border-top: 1px solid var(--border); margin: var(--gap) 0; }
 /* --- layout primitives --- */
 .row { display: flex; align-items: center; gap: var(--gap); flex-wrap: wrap; }
 .row.between { justify-content: space-between; }
+/* Cards in a row grow to fill it. Flex defaults size them to their content, which turns
+ * a row of three stat cards into three narrow slivers against a wall of empty space. */
+.row > .card, .row > .panel { flex: 1 1 220px; align-self: stretch; }
+.card, .panel { min-width: 0; }
 .stack { display: flex; flex-direction: column; gap: var(--gap); }
-.grid { display: grid; gap: var(--gap); grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); }
-.grid.wide { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
+.grid { display: grid; gap: var(--gap); grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
+.grid.wide { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
 .spacer { flex: 1; }
 
 /* --- surfaces --- */
@@ -91,25 +95,25 @@ hr { border: 0; border-top: 1px solid var(--border); margin: var(--gap) 0; }
  */
 
 /* No image dominates the page, however it was marked up. */
-[data-region] img { max-height: 320px; object-fit: cover; }
+[data-region] img { max-height: 240px; object-fit: cover; }
 .card img, .panel img { width: 100%; }
 
-/* A block holding several cards is a grid whether or not anyone said so. */
-[data-region]:has(> .card + .card),
-[data-region]:has(> article + article) {
+/* A block holding several cards is a grid whether or not anyone said so. Matched on any
+ * element at all: models wrap cards in a .stack, a .row, a bare div or nothing, and
+ * naming the containers means chasing each new wrapper they invent. */
+*:has(> .card + .card), *:has(> article + article) {
   display: grid; gap: var(--gap); align-items: start;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
 }
-[data-region]:has(> .card + .card) > :not(.card),
-[data-region]:has(> article + article) > :not(article) { grid-column: 1 / -1; }
+*:has(> .card + .card) > :not(.card),
+*:has(> article + article) > :not(article) { grid-column: 1 / -1; }
 
 /* So is a run of loose images. */
-[data-region]:has(> img + img), .card:has(> img + img), .panel:has(> img + img) {
+*:has(> img + img) {
   display: grid; gap: 10px; align-items: start;
-  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
 }
-[data-region]:has(> img + img) > :not(img),
-.card:has(> img + img) > :not(img), .panel:has(> img + img) > :not(img) { grid-column: 1 / -1; }
+*:has(> img + img) > :not(img) { grid-column: 1 / -1; }
 
 /* --- controls --- */
 .btn, button, input[type="submit"] {
@@ -168,7 +172,8 @@ ul.clean, ol.clean { list-style: none; padding: 0; margin: 0; }
 .list > * { padding: 12px 0; border-bottom: 1px solid var(--border); }
 .list > *:last-child { border-bottom: 0; }
 
-.stat { font-size: clamp(1.5rem, 1.2rem + 1vw, 2.1rem); font-weight: 680; letter-spacing: -.02em; line-height: 1.1; }
+.stat { font-size: clamp(1.15rem, .9rem + .9vw, 1.9rem); font-weight: 680;
+        letter-spacing: -.02em; line-height: 1.15; text-wrap: balance; }
 
 /* Regions fade in when they are replaced, so an update reads as a change to one part
  * of the page rather than the page flickering. */
