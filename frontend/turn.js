@@ -2,6 +2,7 @@
 // applicable. The same two shapes as before -- a first screen that streams body content
 // straight into the parser, and every turn after it that rewrites only what changes.
 
+import { fetchForPrompt } from "./apis.js";
 import { PATCH_SYSTEM_PROMPT, SHELL_SYSTEM_PROMPT } from "./prompts.js";
 import { PatchParser } from "./parser.js";
 import { regionsOf, renderScreen } from "./screen.js";
@@ -13,6 +14,74 @@ const BODY_OPEN_RE = /<body\b[^>]*>/i;
 
 export const SHELL_MAX_TOKENS = 2200;
 export const PATCH_MAX_TOKENS = 1600;
+
+const FETCH_DIRECTIVE_RE = /^#fetch\s+(\S+)/;
+// Long enough to have seen the first line of any real reply, short enough that a reply
+// which is not a data request is barely delayed by the wait.
+const DECIDE_AFTER = 200;
+
+/** Carry on an iterator whose first value has already been taken. */
+async function* resume(first, iterator) {
+  if (first.done) return;
+  yield first.value;
+  while (true) {
+    const next = await iterator.next();
+    if (next.done) return;
+    yield next.value;
+  }
+}
+
+/**
+ * Stream a reply, unless the model opens by asking for data.
+ *
+ * `#fetch <url>` on the first line means the model cannot answer without something it
+ * does not have. Everything it would write after that line is guesswork, so the moment
+ * the directive is recognised the generation is cut off -- which is also why asking for
+ * data is cheap: the wasted call produces about ten tokens.
+ *
+ * The URL is reported through `request` rather than the stream, because the caller has
+ * to act on it before any of the reply can be used.
+ */
+async function* replyStream({ transport, system, user, maxTokens, temperature, signal, request }) {
+  const child = new AbortController();
+  const relay = () => child.abort();
+  if (signal?.aborted) return;
+  signal?.addEventListener("abort", relay);
+
+  let head = "";
+  let decided = false;
+
+  // Returns true if `head` turned out to be a data request. A whole reply can be shorter
+  // than DECIDE_AFTER and carry no newline at all -- "#fetch <url>" is exactly that --
+  // so this has to run when the stream ends as well as during it, or the directive gets
+  // written into the page as text.
+  const isDataRequest = () => {
+    const nl = head.indexOf("\n");
+    const first = (nl === -1 ? head : head.slice(0, nl)).trim();
+    const asked = FETCH_DIRECTIVE_RE.exec(first);
+    if (!asked) return false;
+    request.url = asked[1].replace(/[)>,.]+$/, "");
+    return true;
+  };
+
+  try {
+    for await (const piece of transport.chat({
+      system, user, maxTokens, temperature, signal: child.signal,
+    })) {
+      if (decided) { yield piece; continue; }
+      head += piece;
+      if (head.indexOf("\n") === -1 && head.length < DECIDE_AFTER) continue;
+      if (isDataRequest()) { child.abort(); return; }
+      decided = true;
+      yield head;
+    }
+  } catch (e) {
+    if (e.name !== "AbortError") throw e;
+  } finally {
+    signal?.removeEventListener("abort", relay);
+  }
+  if (!decided && head && !isDataRequest()) yield head;
+}
 
 /**
  * Where the model's actual body content begins, or -1 if it is not clear yet.
@@ -50,20 +119,36 @@ export function buildPatchMessage({ concept, doc, action, memory }) {
  * The document around it -- doctype, head, stylesheet -- belongs to the app and is
  * already on screen before this is called, so the model writes content and nothing else.
  */
-export async function* runShell({ transport, concept, signal }) {
+export async function* runShell({ transport, concept, signal, getData = fetchForPrompt }) {
   yield { type: "phase", name: "building" };
+
+  let user = `APP CONCEPT:\n${concept || "a simple demo app"}`;
+  const request = {};
+  const ask = (u, req) => replyStream({
+    transport, system: SHELL_SYSTEM_PROMPT, user: u,
+    maxTokens: SHELL_MAX_TOKENS, temperature: 0.7, signal, request: req,
+  })[Symbol.asyncIterator]();
+
+  // Pull one value to learn whether the model wanted data first. Exactly one, because
+  // the whole point of the first turn is that it paints while it is being written, and
+  // buffering the reply to inspect it would throw that away. A data request is reported
+  // before anything is yielded, so one value is all it takes to know.
+  let iterator = ask(user, request);
+  let first = await iterator.next();
+  if (request.url) {
+    // One round trip only: a second would be a model looping on data it cannot use.
+    yield { type: "fetching", url: request.url };
+    user += `\n\n${await getData(request.url)}`;
+    iterator = ask(user, {});
+    first = await iterator.next();
+  }
+  const source = resume(first, iterator);
 
   const parts = [];
   let pending = "";
   let started = false;
 
-  for await (const piece of transport.chat({
-    system: SHELL_SYSTEM_PROMPT,
-    user: `APP CONCEPT:\n${concept || "a simple demo app"}`,
-    maxTokens: SHELL_MAX_TOKENS,
-    temperature: 0.7,
-    signal,
-  })) {
+  for await (const piece of source) {
     parts.push(piece);
     if (!started) {
       const joined = parts.join("");
@@ -124,35 +209,49 @@ const RETRY_NUDGE =
   "\n\nYour last reply had a #plan but no #region block, so nothing changed on screen. " +
   "Reply again, and this time include the #region line and the full new HTML under it.";
 
-async function* patchOnce({ transport, system, user, doc, action, signal }) {
+async function* patchOnce({ transport, user, doc, action, signal, request = {} }) {
   const parser = new PatchParser();
-  for await (const piece of transport.chat({
-    system, user, maxTokens: PATCH_MAX_TOKENS, temperature: 0.4, signal,
+  for await (const piece of replyStream({
+    transport, system: PATCH_SYSTEM_PROMPT, user,
+    maxTokens: PATCH_MAX_TOKENS, temperature: 0.4, signal, request,
   })) {
     for (const event of parser.feed(piece)) yield guardScreen(event, { doc, action });
   }
   for (const event of parser.finish()) yield guardScreen(event, { doc, action });
 }
 
-export async function* runPatch({ transport, doc, concept, action, memory, signal }) {
-  const user = buildPatchMessage({ concept, doc, action, memory });
+export async function* runPatch({
+  transport, doc, concept, action, memory, signal, getData = fetchForPrompt,
+}) {
+  let user = buildPatchMessage({ concept, doc, action, memory });
   yield { type: "phase", name: "updating" };
 
-  let produced = false;
-  for await (const event of patchOnce({
-    transport, system: PATCH_SYSTEM_PROMPT, user, doc, action, signal,
-  })) {
-    produced = produced || event.type === "region" || event.type === "screen";
-    yield event;
+  const produced = { any: false };
+  const run = async function* (message, request) {
+    for await (const event of patchOnce({
+      transport, user: message, doc, action, signal, request,
+    })) {
+      produced.any = produced.any || event.type === "region" || event.type === "screen";
+      yield event;
+    }
+  };
+
+  const request = {};
+  yield* run(user, request);
+
+  if (request.url) {
+    // The model asked for data instead of answering, so nothing has been applied yet.
+    // One round trip only -- a second would be a loop.
+    yield { type: "fetching", url: request.url };
+    user += `\n\n${await getData(request.url)}`;
+    yield* run(user, {});
   }
 
-  if (!produced && !signal?.aborted) {
+  if (!produced.any && !signal?.aborted) {
     // The model announced a plan and then wrote nothing under it, so the click did
     // nothing at all -- the worst outcome available, since the user cannot tell a broken
     // control from a slow one. Nothing has been applied yet, so there is nothing to undo,
     // and the failure is fast precisely because it generated almost no tokens.
-    yield* patchOnce({
-      transport, system: PATCH_SYSTEM_PROMPT, user: user + RETRY_NUDGE, doc, action, signal,
-    });
+    yield* run(user + RETRY_NUDGE, {});
   }
 }

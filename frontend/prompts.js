@@ -1,8 +1,26 @@
 // The two prompt contracts, and the only place they live.
 //
+// The catalogue of fetchable APIs is built from apis.js rather than written out here, so
+// there is one list and the prompt cannot advertise something the app will then refuse.
+//
 // Generated pages are rendered by the browser, so the turn protocol lives here rather
 // than on a server: the same code runs whether the model is Ollama on this machine or
 // a model running in this tab. A static copy of this directory is a working app.
+
+import { apiCatalogue } from "./apis.js";
+
+const LIVE_DATA = `
+
+Live data:
+- If this screen genuinely needs real information you do not have -- today's weather,
+  current prices, real facts about a place, a repository, a show -- reply with ONE line
+  and nothing else:
+  #fetch <url>
+  You will be asked again with the response attached, and write the screen then.
+- Only these are available. Substitute the {placeholders}; invent nothing else:
+${apiCatalogue()}
+- Do not ask for data you could just write yourself. A gallery of cat breeds needs no
+  network; today's forecast does.`;
 
 export const SHELL_SYSTEM_PROMPT = `You build the body of a live single-page app.
 
@@ -57,7 +75,7 @@ Interactivity:
   in a <script> at the end, and its control marked data-local (a bare attribute, no value)
   on the control itself, never on a whole nav, section or footer.
 - Leave every other control plain; those are handled for you.
-`;
+` + LIVE_DATA;
 
 export const PATCH_SYSTEM_PROMPT = `You update a live single-page app by rewriting ONLY the parts that change.
 
@@ -104,5 +122,5 @@ Rules:
 #end
 
 - No code fences. Nothing outside this format.
-`;
+` + LIVE_DATA;
 

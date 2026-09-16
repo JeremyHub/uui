@@ -319,6 +319,8 @@ function applyEvent(doc, event, touched) {
   else if (event.type === "region") { applyRegion(doc, event.id, event.html); touched?.push(event.id); }
   else if (event.type === "screen") { applyScreen(doc, event.html); touched?.push("(whole screen)"); }
   else if (event.type === "error") applyRegion(doc, "uui-error", errorRegion(event.message));
+  // "fetching" carries no content -- it says the model asked for real data and the app
+  // is going to get it, which is worth saying out loud because it costs a round trip.
 }
 
 function applyEvents(doc, events) {
@@ -360,7 +362,11 @@ async function sendAction(action) {
   try {
     for await (const event of runPatch({ transport, doc, concept, action, memory: journal.toPrompt() })) {
       if (event.type === "plan") { plan = event.text; timerLabel = plan.slice(0, 80); loading.detail(plan); }
-      else applyEvent(doc, event, touched);
+      else if (event.type === "fetching") {
+        timerLabel = "fetching live data";
+        loading.detail(`Fetching ${new URL(event.url).host}…`);
+        loading.indeterminate();
+      } else applyEvent(doc, event, touched);
       written += (event.html ?? "").length;
       // No token count to divide by, so progress is measured against the cap the model
       // was given -- roughly right, and always moving forwards.
@@ -419,7 +425,10 @@ async function startFromConcept() {
   let written = 0;
   try {
     for await (const event of runShell({ transport, concept })) {
-      if (event.type === "screen_delta") {
+      if (event.type === "fetching") {
+        loading.detail(`Fetching ${new URL(event.url).host}…`);
+        loading.indeterminate();
+      } else if (event.type === "screen_delta") {
         doc.write(event.text);
         written += event.text.length;
         loading.progress(Math.min(0.95, written / (SHELL_MAX_TOKENS * 2)));

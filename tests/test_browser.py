@@ -6,6 +6,7 @@ next one. The server tests cannot see any of it. These can, and they run in seco
 because the model is a stub rather than a 3B on the GPU.
 """
 
+import asyncio
 import os
 import re
 import socket
@@ -378,6 +379,22 @@ def prompts_sent(fake):
     return ["\n".join(m["content"] for m in r["messages"]) for r in fake.requests]
 
 
+async def wait_for_prompt(fake, needle, limit=25):
+    """Wait until the model has been sent a prompt containing `needle`.
+
+    Settling is not enough when a turn goes out to an API: that request does not go to
+    the model endpoint, so the watcher sees nothing in flight and the screen is not
+    changing either. What is being waited for here is the second ask, so wait for it.
+    """
+    deadline = time.monotonic() + limit
+    while time.monotonic() < deadline:
+        hit = [p for p in prompts_sent(fake) if needle in p]
+        if hit:
+            return hit[-1]
+        await asyncio.sleep(0.1)
+    raise AssertionError(f"no prompt containing {needle!r} was ever sent")
+
+
 @pytest.mark.asyncio
 async def test_what_the_user_typed_survives_later_turns(fake, page):
     # A turn sees the screen and the click that caused it. Anything the user established
@@ -422,6 +439,57 @@ async def test_a_long_session_does_not_grow_the_prompt_without_bound(fake, page)
     assert len(late) < len(early) * 2, (
         f"prompt grew from {len(early)} to {len(late)} chars over a long session"
     )
+
+
+# --- live data --------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_a_model_that_asks_for_data_gets_it_and_is_asked_again(fake, page, monkeypatch):
+    # A generated page can show real information, but only if it says it needs some: the
+    # round trip is only worth paying for when the model cannot answer without it.
+    asked = {"count": 0}
+
+    def reply(_prompt):
+        asked["count"] += 1
+        # The shell is answered by a rule, so this is the first patch attempt.
+        if asked["count"] == 1:
+            return "#fetch https://api.tvmaze.com/search/shows?q=dune"
+        return "#plan show it\n#region results\n<p>Dune (2021)</p>\n#end"
+
+    scripted(fake)
+    fake.default = reply
+
+    watcher = Watcher(page)
+    await start_app(page, watcher)
+    await watcher.turns_taken(lambda: click_text(page, "Open Results"))
+
+    await wait_for_prompt(fake, "DATA FROM https://api.tvmaze.com")
+    await watcher.settle(quiet=1.0)
+    assert "Dune (2021)" in await watcher.text()
+
+
+@pytest.mark.asyncio
+async def test_a_refused_url_is_reported_to_the_model_not_hidden(fake, page):
+    # Told the data is unavailable the model writes a page that says so. Given silence
+    # it invents the numbers, which is the one outcome worth going out of the way to
+    # avoid for something presented as real data.
+    asked = {"count": 0}
+
+    def reply(_prompt):
+        asked["count"] += 1
+        if asked["count"] == 1:
+            return "#fetch https://evil.example.net/secrets"
+        return "#plan say so\n#region results\n<p>no data</p>\n#end"
+
+    scripted(fake)
+    fake.default = reply
+
+    watcher = Watcher(page)
+    await start_app(page, watcher)
+    await watcher.turns_taken(lambda: click_text(page, "Open Results"))
+
+    followup = await wait_for_prompt(fake, "unavailable")
+    assert "not on the allowed" in followup
 
 
 # --- the failure that destroys work ----------------------------------------
