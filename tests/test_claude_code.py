@@ -6,6 +6,7 @@ stream-json` does, so these run offline and spend nothing.
 
 import asyncio
 import json
+import os
 import stat
 import textwrap
 
@@ -72,13 +73,37 @@ async def test_the_app_prompt_replaces_claude_codes_own_and_nothing_else_joins_i
     await collect()
     call = json.loads((tmp_path / "call.json").read_text())
     argv = call["argv"]
-    assert argv[argv.index("--system-prompt") + 1] == "SYS"
+    system = argv[argv.index("--system-prompt") + 1]
+    assert system.endswith("SYS"), "the app's prompt has to stay last, where it is weighted most"
+    assert "anonymous visitor" in system, "the account's name and email ended up in pages"
     assert argv[argv.index("--model") + 1] == "haiku"
     assert argv[argv.index("--tools") + 1] == "", "a page generator has no business running tools"
     assert argv[argv.index("--setting-sources") + 1] == "", "the user's hooks and plugins joined in"
     assert "--no-session-persistence" in argv
-    assert call["stdin"] == "USER"
+    assert call["stdin"].startswith("USER")
     assert call["max"] == "123", "the app's output cap was dropped"
+
+
+STOP = {"type": "stream_event", "event": {"type": "message_stop"}}
+
+
+@pytest.mark.asyncio
+async def test_one_call_is_one_reply_even_when_it_hits_the_cap(tmp_path, monkeypatch):
+    # At the output cap Claude Code tells itself to resume and writes a second reply,
+    # sometimes starting the page over. That was a page written out three times, behind
+    # a loading screen that stayed up for the extra half minute it took.
+    resume = {"type": "user", "message": {"content": [{"type": "text", "text": "Output token limit hit."}]}}
+    monkeypatch.setattr(claude_code, "CLAUDE_BIN", str(fake_cli(
+        tmp_path, [text("<section>page</section>"), STOP, resume,
+                   text("<section>page</section>"), STOP, OK], hang=True)))
+    started = asyncio.get_running_loop().time()
+    lines = await collect()
+    assert "".join(l.get("message", {}).get("content", "") for l in lines) == "<section>page</section>"
+    assert lines[-1]["done"] is True
+    assert asyncio.get_running_loop().time() - started < 5, "waited on the CLI after the reply ended"
+    pid = json.loads((tmp_path / "call.json").read_text())["pid"]
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
 
 
 @pytest.mark.asyncio
@@ -105,7 +130,6 @@ async def test_an_abandoned_reply_stops_the_cli(tmp_path, monkeypatch):
     await stream.aclose()
     pid = json.loads((tmp_path / "call.json").read_text())["pid"]
     await asyncio.sleep(0.1)
-    import os
     with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)
 
