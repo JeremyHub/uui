@@ -9,6 +9,8 @@
 //                           a multi-gigabyte download the first time for in-tab.
 //   chat({...})          -> async iterable of text pieces.
 
+import { WEBLLM_URL, keepGpuJobsShort } from "./gpu-jobs.js";
+
 const OLLAMA_KEEP_ALIVE = "30m";
 
 /** Ollama, reached through this app's own server (or directly, if it allows the origin). */
@@ -18,7 +20,10 @@ export function createOllamaTransport({ endpoint = "/chat", model }) {
     model,
     label: `Ollama · ${model}`,
     needsPreparing: false,
+    ready: true,
     async prepare() {},
+    async isCached() { return true; },
+    dispose() {},
 
     async *chat({ system, user, maxTokens, temperature, signal }) {
       const response = await fetch(endpoint, {
@@ -64,11 +69,10 @@ export function createOllamaTransport({ endpoint = "/chat", model }) {
 
 // --- in-tab inference -------------------------------------------------------
 
-const WEBLLM_CDN = "https://esm.run/@mlc-ai/web-llm";
 let webllmModule = null;
 
 async function loadWebLLM() {
-  if (!webllmModule) webllmModule = await import(/* @vite-ignore */ WEBLLM_CDN);
+  if (!webllmModule) webllmModule = await import(/* @vite-ignore */ WEBLLM_URL);
   return webllmModule;
 }
 
@@ -191,47 +195,123 @@ export function pickWebLLMModel(models, budgetMB) {
   });
 }
 
+// How many prompt tokens go through the model in one GPU job. The prebuilt configs say
+// 2048, which is the whole first-turn prompt at once -- several seconds of GPU time on a
+// mid-range card, past the point where the driver resets the GPU. See gpu-jobs.js.
+const PREFILL_CHUNK_TOKENS = 128;
+
 /** A model running in this tab. No server, no network after the first load. */
-export async function createWebLLMTransport({ modelId }) {
+export async function createWebLLMTransport({ modelId, prefillChunkTokens = PREFILL_CHUNK_TOKENS, useWorker = true }) {
   const webllm = await loadWebLLM();
   let engine = null;
+  let worker = null;
+  let loading = null;        // the load in flight, shared by everyone who asks for it
+  let reportProgress = null; // whoever asked most recently is the one watching
+  let disposed = false;
+
+  async function load() {
+    const config = {
+      initProgressCallback: (report) => {
+        // report.progress is 0..1 over the whole load; text says which shard.
+        reportProgress?.({ fraction: report.progress ?? 0, text: report.text ?? "" });
+      },
+    };
+    // In a worker when the page is served, so decoding does not queue behind the page
+    // rendering what it just decoded -- see llm-worker.js. A file:// page cannot start
+    // a worker at all, and there the main thread is still better than nothing.
+    try {
+      if (useWorker) worker = new Worker(new URL("./llm-worker.js", import.meta.url), { type: "module" });
+    } catch (e) {
+      console.warn("no worker for the model, running it on the page's thread", e);
+    }
+    const chatOptions = { prefill_chunk_size: prefillChunkTokens };
+    if (worker) {
+      engine = await webllm.CreateWebWorkerMLCEngine(worker, modelId, config, chatOptions);
+    } else {
+      engine = await webllm.CreateMLCEngine(modelId, config, chatOptions);
+      keepGpuJobsShort(engine, prefillChunkTokens);
+    }
+    // Dropped while it was loading -- the user picked another model. Let this one go.
+    if (disposed) {
+      engine.unload?.().catch(() => {});
+      worker?.terminate();
+      engine = null;
+      worker = null;
+    }
+  }
 
   return {
     id: "webllm",
     model: modelId,
     label: `In this tab · ${modelId}`,
     needsPreparing: true,
+    get ready() { return engine !== null; },
 
-    async prepare(onProgress) {
-      if (engine) return;
-      engine = await webllm.CreateMLCEngine(modelId, {
-        initProgressCallback: (report) => {
-          // report.progress is 0..1 over the whole load; text says which shard.
-          onProgress?.({ fraction: report.progress ?? 0, text: report.text ?? "" });
-        },
-      });
+    /** Whether loading needs no download -- which makes it worth starting unasked. */
+    async isCached() {
+      try { return await webllm.hasModelInCache(modelId); } catch { return false; }
+    },
+
+    // Loading can start before anyone is watching (see warmUp in main.js), so a second
+    // caller joins the load in flight rather than starting another -- two copies of the
+    // weights do not fit on the cards this is aimed at.
+    prepare(onProgress) {
+      reportProgress = onProgress ?? reportProgress;
+      if (engine) return Promise.resolve();
+      loading ??= load().finally(() => { loading = null; });
+      return loading;
+    },
+
+    /** Give the GPU memory back. The next model will not fit alongside this one. */
+    dispose() {
+      engine?.unload?.().catch(() => {});
+      worker?.terminate();
+      engine = null;
+      worker = null;
+      disposed = true;
     },
 
     async *chat({ system, user, maxTokens, temperature, signal }) {
       if (!engine) throw new Error("model is not loaded yet");
-      const stream = await engine.chat.completions.create({
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: user },
-        ],
-        stream: true,
-        temperature,
-        max_tokens: maxTokens,
-      });
-      for await (const chunk of stream) {
-        if (signal?.aborted) {
-          // Nothing else is queued behind this, and the engine is single-threaded, so
-          // stopping the generation is what frees it for the click the user just made.
-          await engine.interruptGenerate();
-          return;
+      let stream = null;
+      let finished = false;
+      try {
+        stream = (await engine.chat.completions.create({
+          messages: [
+            { role: "system", content: system },
+            { role: "user", content: user },
+          ],
+          stream: true,
+          temperature,
+          max_tokens: maxTokens,
+        }))[Symbol.asyncIterator]();
+        while (!signal?.aborted) {
+          const { done, value } = await stream.next();
+          if (done) { finished = true; break; }
+          const piece = value.choices?.[0]?.delta?.content;
+          if (piece) yield piece;
         }
-        const piece = chunk.choices?.[0]?.delta?.content;
-        if (piece) yield piece;
+      } catch (e) {
+        finished = true;
+        // A lost GPU device takes the engine with it, and every later call fails with
+        // "Object has already been disposed" -- a dead app that still looks alive.
+        // Forget it, so the next turn loads the model again instead.
+        if (/device.*lost|disposed/i.test(e.message ?? "")) {
+          engine = null;
+          worker?.terminate();
+          worker = null;
+          throw new Error("The GPU stopped responding, so the model will reload on your next click.");
+        }
+        throw e instanceof Error ? e : new Error(String(e ?? "the model failed"));
+      } finally {
+        // WebLLM holds the engine's lock until a stream runs to its end, and does not
+        // release it when one is abandoned -- so a reply cut short (an abort, a #fetch
+        // line, a caller that stopped reading) left every later request waiting forever
+        // on an idle GPU. Stop the generation and read it out to the end instead.
+        if (stream && !finished && engine) {
+          await engine.interruptGenerate();
+          try { while (!(await stream.next()).done); } catch { /* ending anyway */ }
+        }
       }
     },
   };

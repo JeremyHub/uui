@@ -155,7 +155,18 @@ async function ollamaModels() {
 // Auto is the default because the honest answer for most people is "whichever one
 // works", and the wrong choice here is a multi-gigabyte download that ends in an
 // out-of-memory error.
-async function populateModels(known = null) {
+//
+// Listing the in-tab models means importing WebLLM from a CDN, which takes seconds. A
+// start in that window used to fail with "no in-tab model is available on this device",
+// which is false and reads as final, so a start waits on whichever listing is current.
+let modelsReady = Promise.resolve();
+
+function populateModels(known = null) {
+  modelsReady = fillModels(known);
+  return modelsReady;
+}
+
+async function fillModels(known) {
   const engine = engineEl.value;
   modelEl.replaceChildren(option("", "loading…"));
   modelEl.disabled = true;
@@ -198,7 +209,7 @@ async function buildTransport() {
 
 async function ensureTransportReady() {
   if (!transport) transport = await buildTransport();
-  if (!transport.needsPreparing) return;
+  if (transport.ready) return;
 
   loading.show("Loading the model", {
     detail: gpu.software
@@ -230,9 +241,32 @@ async function setupEngineChoice() {
   engineEl.replaceChildren(...options);
   engineEl.title = gpu.ok ? "Where the model runs" : `Where the model runs. ${gpu.why}`;
   engineEl.value = backendReachable ? "ollama" : (gpu.ok ? "webllm" : "ollama");
-  engineEl.addEventListener("change", () => { transport = null; populateModels(); });
-  modelEl.addEventListener("change", () => { transport = null; });
-  return populateModels(models);
+  engineEl.addEventListener("change", () => { dropTransport(); populateModels().then(warmUp); });
+  modelEl.addEventListener("change", () => { dropTransport(); warmUp(); });
+  await populateModels(models);
+  warmUp();
+}
+
+// A model that loaded once will load again without the network, in seconds rather than
+// minutes. Waiting for the button to start that means the GPU sits idle while someone
+// types and then they wait anyway, so start as soon as the choice is made. Nothing
+// uncached is fetched unasked: that is a multi-gigabyte download.
+async function warmUp() {
+  if (transport || engineEl.value !== "webllm" || gpu.software || busy) return;
+  try {
+    const candidate = await buildTransport();
+    if (transport || !(await candidate.isCached())) return;
+    transport = candidate;
+    await candidate.prepare();
+  } catch (e) {
+    console.warn("could not load the model ahead of time", e);
+  }
+}
+
+// The one on the card has to go before another can fit.
+function dropTransport() {
+  transport?.dispose?.();
+  transport = null;
 }
 
 // --- guessing ahead ---------------------------------------------------------
@@ -380,10 +414,13 @@ async function sendAction(action) {
   predictions.clear();
 
   startTimer("updating");
-  loading.show("Updating", { subtle: true, delay: 180 });
   const touched = [];
   let plan = "", written = 0;
   try {
+    // Normally already loaded. Not after the GPU has been lost, which takes the model
+    // with it -- see transports.js.
+    await ensureTransportReady();
+    loading.show("Updating", { subtle: true, delay: 180 });
     for await (const event of runPatch({ transport, doc, concept, action, memory: journal.toPrompt() })) {
       if (event.type === "plan") { plan = event.text; timerLabel = plan.slice(0, 80); loading.detail(plan); }
       else if (event.type === "fetching") {
@@ -412,12 +449,14 @@ async function sendAction(action) {
 // The first turn is the only one that writes a whole screen. It is streamed into the
 // iframe's parser rather than assigned at the end, so the page fills in as it is written.
 async function startFromConcept() {
-  concept = document.getElementById("concept").value.trim() || "a simple demo app";
+  concept = document.getElementById("concept").value.trim() || "something interesting";
   bootstrapEl.style.display = "none";
   busy = true;
 
   loading.show("Getting ready");
   try {
+    await engineChosen;
+    await modelsReady;
     await ensureTransportReady();
   } catch (e) {
     loading.hide();
@@ -427,8 +466,8 @@ async function startFromConcept() {
     return;
   }
 
-  startTimer("building");
-  loading.show("Building your app", { detail: concept });
+  startTimer("making");
+  loading.show("Making it for you", { detail: concept });
   await baseCssReady;
 
   const doc = appEl.contentDocument;
@@ -461,7 +500,7 @@ async function startFromConcept() {
   } catch (e) {
     doc.write(errorRegion(e.message));
   }
-  if (!written) doc.write(errorRegion("the model produced nothing"));
+  if (!written) doc.write(errorRegion("Nothing came back. Try asking another way."));
   doc.write("</body></html>");
   doc.close();
 
@@ -547,5 +586,5 @@ document.getElementById("concept").addEventListener("keydown", (e) => {
 });
 document.getElementById("reset-btn").addEventListener("click", () => location.reload());
 
-setupEngineChoice();
+const engineChosen = setupEngineChoice();
 renderTranscript();

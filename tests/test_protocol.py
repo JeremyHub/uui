@@ -310,3 +310,32 @@ async def test_the_patch_prompt_carries_the_markup_the_model_has_to_match(page):
     assert "a cat gallery" in message
     assert "Next" in message
     assert "the user likes cats" in message, "the session's memory never reached the prompt"
+
+
+# --- keeping GPU jobs short ----------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_a_long_prompt_reaches_the_gpu_as_short_jobs(page):
+    # WebLLM's pipeline, reduced to what gpu-jobs.js touches. The real one records every
+    # dispatch until something syncs, so a prompt that never syncs is one job -- long
+    # enough on a mid-range card for the driver to reset the GPU.
+    seen = await page.evaluate("""async () => {
+        const { keepGpuJobsShort } = await import('./gpu-jobs.js');
+        const log = [];
+        const pipeline = {
+          prefillChunkSize: 1024,
+          device: { sync: async () => log.push('sync') },
+          async embedAndForward(inputs, length) { log.push(`forward ${length}`); return 'logits'; },
+        };
+        const engine = { loadedModelIdToPipeline: new Map([['m', pipeline]]) };
+        keepGpuJobsShort(engine, 128);
+        keepGpuJobsShort(engine, 128);   // loading again must not wrap twice
+        const result = await pipeline.embedAndForward([], 128);
+        await pipeline.embedAndForward([], 1);
+        return { chunk: pipeline.prefillChunkSize, log, result };
+    }""")
+    assert seen["chunk"] == 128, "the compiled chunk size was left in place"
+    assert seen["log"] == ["forward 128", "sync", "forward 1"], (
+        "each prompt chunk has to finish before the next is queued; a decoded token needs no wait"
+    )
+    assert seen["result"] == "logits"

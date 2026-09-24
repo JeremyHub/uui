@@ -143,6 +143,16 @@ coder-tuned one at the same size, skips models needing a WebGPU extension this d
 lacks, and will not pick anything under about a billion parameters unless nothing else
 fits — below that a model cannot hold to the reply format.
 
+A model that has loaded before starts loading again as soon as the page opens, so it is
+usually ready by the time you have typed what you want to see. It runs in a Web Worker,
+so decoding never waits behind the page rendering what was just decoded.
+
+Long prompts are fed to the GPU in short jobs. Linux's amdgpu driver resets the GPU when
+one job runs past its lockup timeout (two seconds on current kernels), and WebLLM as
+shipped submits a whole prompt as one job -- four seconds on an RX 570. The reset takes
+the display with it: a black screen, and once, the whole session. `gpu-jobs.js` caps the
+chunk at 128 tokens and waits for each, at about a second apiece on that card.
+
 How fast this is depends entirely on the GPU. On a machine where WebGPU has real
 acceleration it is comparable to Ollama; where it falls back to a software path it is far
 slower than the Ollama route on the same box, which is why the loading overlay reports
@@ -203,6 +213,8 @@ frontend/parser.js     the #region reply format, parsed as it streams
 frontend/screen.js     compacting the live screen into a prompt
 frontend/journal.js    what the session remembers
 frontend/transports.js where the model runs: Ollama, or this tab
+frontend/llm-worker.js the in-tab model, off the page's thread
+frontend/gpu-jobs.js   keeping GPU jobs short enough that the driver does not reset the GPU
 frontend/apis.js       live data, and shrinking it to fit a prompt
 frontend/dom.js        reading and changing the generated page
 frontend/base.css      the design system generated pages are written against
