@@ -138,6 +138,19 @@ Then open http://localhost:8000/
 `qwen2.5-coder:3b` is the default: fully GPU-resident on a 4GB card and the best patcher
 of everything tested. Override with `OLLAMA_MODEL`, or pick from the model menu.
 
+### With Claude, through Claude Code
+
+If the `claude` CLI is on the server's PATH and logged in, the model menu also offers
+`claude:sonnet`, `claude:haiku` and `claude:opus`. Each call runs `claude -p` with this
+app's prompt in place of Claude Code's own, with no tools, no saved session, no thinking
+and none of your settings, hooks or MCP servers. `/chat` translates what it streams into
+Ollama's format, so the engine is unchanged. It uses your Claude Code subscription and
+counts against its usage limits, so choosing a Claude model turns off next-click
+guessing until you turn it back on.
+
+`UUI_CLAUDE_MODELS` changes which models are offered, and `UUI_CLAUDE_BIN=` (empty)
+turns this off.
+
 ### With no server at all
 
 ```
@@ -192,6 +205,7 @@ broke the suite and a green suite proved only that those variables still existed
 | `tests/test_protocol.py` | compaction, the reply parser, the guards — run in a browser |
 | `tests/test_browser.py` | what the app does: clicks, guessing, memory, the overlay |
 | `tests/test_fetch.py` | what `/fetch` calls, and what comes back |
+| `tests/test_claude_code.py` | Claude through the CLI, against a stand-in script |
 | `tests/test_static.py` | the app served as plain files, with no backend |
 
 ## Measuring
@@ -218,6 +232,7 @@ in how well the page was split up.
 
 ```
 backend/main.py        serve, proxy Ollama, fetch any API
+backend/claude_code.py Claude through the Claude Code CLI, spoken as Ollama
 frontend/index.html    the shell: model picker, loading overlay, the iframe
 frontend/main.js       wiring: turns, guessing, delegation, the overlay
 frontend/turn.js       running a turn, and the guards around a reply

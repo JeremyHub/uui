@@ -173,11 +173,15 @@ async function fillModels(known) {
   const auto = pickModel(models, host.budgetMB);
   modelEl.replaceChildren(
     option("auto", auto ? `Auto · ${auto.id}` : "Auto"),
-    ...models.map((m) => option(
-      m.id,
-      m.sizeMB ? `${m.id} (${(m.sizeMB / 1024).toFixed(1)} GB)` : m.id,
-      { disabled: host.strictBudget && m.sizeMB !== null && m.sizeMB > host.budgetMB * 1.3 },
-    )),
+    ...models.map((m) => {
+      const el = option(
+        m.id,
+        m.sizeMB ? `${m.id} (${(m.sizeMB / 1024).toFixed(1)} GB)` : m.id,
+        { disabled: host.strictBudget && m.sizeMB !== null && m.sizeMB > host.budgetMB * 1.3 },
+      );
+      if (m.metered) el.dataset.metered = "";
+      return el;
+    }),
   );
   modelEl.value = "auto";
   modelEl.dataset.auto = auto?.id ?? "";
@@ -227,7 +231,13 @@ async function setupEngineChoice() {
   hostEl.title = gpu.ok ? "Where the model runs" : `Where the model runs. ${gpu.why}`;
   hostEl.value = hosts.keys().next().value;
   hostEl.addEventListener("change", () => { dropEngine(); populateModels().then(warmUp); });
-  modelEl.addEventListener("change", () => { dropEngine(); warmUp(); });
+  modelEl.addEventListener("change", () => {
+    // Guessing ahead spends several calls per click. Free on a local model, but on a
+    // metered one that is someone's usage limit, so it waits to be switched back on.
+    if (modelEl.selectedOptions[0]?.dataset.metered !== undefined) speculateEl.checked = false;
+    dropEngine();
+    warmUp();
+  });
   await populateModels(hostEl.value === server.id ? serverModels ?? [] : null);
   warmUp();
 }

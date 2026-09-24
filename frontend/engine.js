@@ -5,7 +5,8 @@
 // hosts at the bottom. The engine builds the request, streams the reply, stops a
 // generation, loads and unloads, and picks a model, once. A host only answers "where":
 //
-//   listModels()          what can run there, as { id, sizeMB }
+//   listModels()          what can run there, as { id, sizeMB, metered? } -- metered
+//                         meaning every call is paid for, so nothing is spent unasked
 //   isCached(id)          whether loading needs no download
 //   load(id, onProgress)  -> a backend that speaks the OpenAI chat completions shape:
 //                            chat.completions.create(), interruptGenerate(), unload()
@@ -236,7 +237,9 @@ export function serverHost({ chatEndpoint = "chat", modelsEndpoint = "models", b
       const response = await fetch(modelsEndpoint);
       if (!response.ok) throw new Error(`the server answered ${response.status}`);
       const data = await response.json();
-      return (data.models ?? []).map((m) => ({ id: m.id, sizeMB: m.sizeMB ?? null }));
+      return (data.models ?? []).map((m) => ({
+        id: m.id, sizeMB: m.sizeMB ?? null, metered: Boolean(m.metered),
+      }));
     },
     async isCached() { return true; },
     async load(modelId) { return serverBackend(chatEndpoint, modelId); },

@@ -8,16 +8,18 @@ the alternative, and it was not one.
 
 What is left is what a browser genuinely cannot do for itself:
 
-  POST /chat   stream from Ollama, which does not allow this origin by default. The
-               engine in frontend/engine.js is the same one that runs in the tab;
-               this is only somewhere else for it to run
-  GET  /models what Ollama has pulled
+  POST /chat   stream from Ollama, which does not allow this origin by default, or from
+               Claude through the Claude Code CLI (see claude_code.py). The engine in
+               frontend/engine.js is the same one that runs in the tab; this is only
+               somewhere else for it to run
+  GET  /models what Ollama has pulled, and the Claude models on offer
   GET  /fetch  call an external API on the page's behalf, past CORS
 
 Serve frontend/ as static files from anywhere and the app still works; it just needs a
 model in the tab instead.
 """
 
+import json
 import os
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -26,6 +28,8 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+
+from backend import claude_code
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
@@ -44,7 +48,8 @@ async def index():
 
 @app.get("/models")
 async def models():
-    """What Ollama has pulled, for the model picker."""
+    """What Ollama has pulled, and the Claude models, for the model picker."""
+    claude = claude_code.models()
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             response = await client.get(f"{OLLAMA_URL}/api/tags")
@@ -52,10 +57,12 @@ async def models():
             tags = response.json().get("models", [])
     except httpx.HTTPError as exc:
         return JSONResponse(
-            {"models": [], "error": f"Could not reach Ollama at {OLLAMA_URL} ({type(exc).__name__})."},
+            {"models": claude,
+             "error": f"Could not reach Ollama at {OLLAMA_URL} ({type(exc).__name__})."},
             status_code=200,
         )
-    return {"models": [{"id": m["name"], "sizeMB": round(m.get("size", 0) / 1e6)} for m in tags]}
+    pulled = [{"id": m["name"], "sizeMB": round(m.get("size", 0) / 1e6)} for m in tags]
+    return {"models": pulled + claude}
 
 
 @app.get("/fetch")
@@ -100,9 +107,18 @@ async def chat(request: Request):
 
     Deliberately dumb: the body is Ollama's own request format and the response is
     Ollama's own NDJSON. Nothing here knows what a region is, so nothing here has to
-    change when the protocol does.
+    change when the protocol does. A Claude model gets the same format back, translated
+    from the Claude Code CLI.
     """
     payload = await request.body()
+    try:
+        model = json.loads(payload).get("model", "")
+    except ValueError:
+        model = ""
+    if claude_code.is_claude(model):
+        return StreamingResponse(
+            claude_code.stream_chat(json.loads(payload)), media_type="application/x-ndjson",
+        )
 
     async def stream():
         client = httpx.AsyncClient(timeout=None)
@@ -130,7 +146,6 @@ async def chat(request: Request):
 
 
 def _error_line(message: str) -> bytes:
-    import json
     return (json.dumps({"error": message}) + "\n").encode()
 
 
