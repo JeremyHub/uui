@@ -339,3 +339,54 @@ async def test_a_long_prompt_reaches_the_gpu_as_short_jobs(page):
         "each prompt chunk has to finish before the next is queued; a decoded token needs no wait"
     )
     assert seen["result"] == "logits"
+
+
+# --- one engine, wherever it runs ---------------------------------------------
+
+@pytest.mark.asyncio
+async def test_a_reply_cut_short_stops_the_generation_and_frees_the_model(page):
+    # The engine is the same code on every host, so this is checked once against a host
+    # reduced to the backend shape both real ones provide. A generation abandoned
+    # mid-stream has to be stopped and read out, or the next request waits forever on a
+    # model that is holding a lock for a reply nobody is reading.
+    seen = await page.evaluate("""async () => {
+        const { createEngine } = await import('./engine.js');
+        const log = [];
+        let stopped = false;
+        const backend = {
+          chat: { completions: { async create(request) {
+            stopped = false;
+            log.push(`create ${request.max_tokens}`);
+            return (async function* () {
+              for (const piece of ['a', 'b', 'c', 'd']) {
+                if (stopped) return;
+                yield { choices: [{ delta: { content: piece } }] };
+              }
+            })();
+          } } },
+          async interruptGenerate() { stopped = true; log.push('interrupt'); },
+          async unload() { log.push('unload'); },
+        };
+        const host = { id: 'h', label: 'Here', async isCached() { return true; },
+                       async load() { return backend; } };
+        const engine = createEngine(host, 'm');
+        await engine.prepare();
+
+        const controller = new AbortController();
+        let first = '';
+        for await (const piece of engine.chat({ system: 's', user: 'u', maxTokens: 9,
+                                                temperature: 0, signal: controller.signal })) {
+          first += piece;
+          controller.abort();
+        }
+        let second = '';
+        for await (const piece of engine.chat({ system: 's', user: 'u', maxTokens: 9 })) {
+          second += piece;
+        }
+        engine.dispose();
+        return { first, second, log };
+    }""")
+    assert seen["first"] == "a", "generation carried on after the abort"
+    assert "interrupt" in seen["log"][:3], "an aborted reply was never stopped"
+    assert seen["second"] == "abcd", "the model was not free for the next request"
+    assert seen["log"][-1] == "unload"

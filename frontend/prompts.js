@@ -1,7 +1,7 @@
 // The two prompt contracts, and the only place they live.
 //
-// The catalogue of fetchable APIs is built from apis.js rather than written out here, so
-// there is one list and the prompt cannot advertise something the app will then refuse.
+// The catalogue of known-good APIs is built from apis.js rather than written out here, so
+// there is one list of them.
 //
 // Generated pages are rendered by the browser, so the turn protocol lives here rather
 // than on a server: the same code runs whether the model is Ollama on this machine or
@@ -14,10 +14,10 @@ const LIVE_DATA = `
 Live data:
 - If this screen genuinely needs real information you do not have -- today's weather,
   current prices, real facts about a place, a repository, a show -- reply with ONE line
-  and nothing else:
+  and nothing else, naming any API that needs no key:
   #fetch <url>
   You will be asked again with the response attached, and write the screen then.
-- Only these are available. Substitute the {placeholders}; invent nothing else:
+- Some that are known to work. Substitute the {placeholders}:
 ${apiCatalogue()}
 - Do not ask for data you could just write yourself. A gallery of cat breeds needs no
   network; today's forecast does.`;

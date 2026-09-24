@@ -4,11 +4,15 @@ An app that generates itself as you use it. You say what it should be, a model w
 first screen, and every click after that rewrites only the parts that change. The output
 is rendered unsanitized in a sandboxed iframe, by design.
 
-It runs two ways:
+There is one engine, and it runs in one of two places:
 
-- **with Ollama**, through the small Python server in `backend/`, or
-- **entirely in the browser** over WebGPU, in which case `frontend/` is the whole app and
+- **on this machine**, with Ollama behind the small Python server in `backend/`, or
+- **in the browser tab** over WebGPU, in which case `frontend/` is the whole app and
   there is no server at all.
+
+The prompts, the turn loop, the reply parser, memory, guessing, model choice, and even
+how a generation is streamed and stopped are the same code in both. The only thing that
+differs is the host: the part that lists models and starts one.
 
 ## How a turn works
 
@@ -48,6 +52,15 @@ with a hand-written parser to walk the screen; the browser has the screen alread
 
 The backend keeps only what a browser cannot do for itself: reach Ollama past CORS, list
 what it has pulled, and call an external API on the page's behalf.
+
+### One engine, two hosts
+
+`frontend/engine.js` is the engine: it builds the request, streams the reply, stops a
+generation that is no longer wanted, loads and unloads the model, and picks one. Below it
+a host answers one question, where, by handing the engine a backend in the OpenAI chat
+completions shape. WebLLM's engine already has that shape, so the tab host passes it
+through. The server host provides the same shape over HTTP, the way WebLLM's own worker
+engine provides it over `postMessage`. Adding a third place to run means writing one host.
 
 ### The stylesheet is the app's, not the model's
 
@@ -104,12 +117,12 @@ without data; the app fetches it and asks again with the response attached. The 
 is recognised on the first line and generation is cut off there, so asking costs about ten
 tokens rather than a wasted screen.
 
-`GET /fetch` is the one place in this app where model output becomes an outbound request,
-so it is bounded on every side: an allowlist of key-free public APIs (`UUI_API_ALLOWLIST`
-to change it), https only, no redirects, no forwarded headers or cookies, a resolved-address
-check so an allowlisted name cannot point at `127.0.0.1`, and a 64KB cap because the body
-ends up in a prompt. Refusals are reported to the model — told the data is unavailable it
-says so, given silence it invents the numbers.
+Any API will do. The prompt names a handful known to work, as examples rather than a
+limit, and `GET /fetch` calls whatever http or https URL the model asks for, following
+redirects. That includes hosts on your local network and on the server's own machine,
+since those are APIs too. The request is anonymous (no forwarded headers or cookies), and
+the body is capped at 64KB because it ends up in a prompt. Failures are reported to the
+model: told the data is unavailable, it says so; given silence, it invents the numbers.
 
 ## Run it
 
@@ -178,7 +191,7 @@ broke the suite and a green suite proved only that those variables still existed
 |---|---|
 | `tests/test_protocol.py` | compaction, the reply parser, the guards — run in a browser |
 | `tests/test_browser.py` | what the app does: clicks, guessing, memory, the overlay |
-| `tests/test_fetch.py` | what `/fetch` refuses |
+| `tests/test_fetch.py` | what `/fetch` calls, and what comes back |
 | `tests/test_static.py` | the app served as plain files, with no backend |
 
 ## Measuring
@@ -186,10 +199,10 @@ broke the suite and a green suite proved only that those variables still existed
 ```
 uv run uvicorn backend.main:app --port 8765 &
 uv run python3 scripts/e2e.py         # what a user feels, per turn
-uv run python3 scripts/baseline.py    # the original four-call pipeline, for comparison
 ```
 
-Same machine, same model (`qwen2.5-coder:3b`, RX 580 4GB):
+Against the original four-call pipeline, measured before it was removed. Same machine,
+same model (`qwen2.5-coder:3b`, RX 580 4GB):
 
 | | original pipeline | now |
 |---|---|---|
@@ -204,7 +217,7 @@ in how well the page was split up.
 ## Layout
 
 ```
-backend/main.py        serve, proxy Ollama, fetch an allowlisted API
+backend/main.py        serve, proxy Ollama, fetch any API
 frontend/index.html    the shell: model picker, loading overlay, the iframe
 frontend/main.js       wiring: turns, guessing, delegation, the overlay
 frontend/turn.js       running a turn, and the guards around a reply
@@ -212,7 +225,7 @@ frontend/prompts.js    the two prompt contracts
 frontend/parser.js     the #region reply format, parsed as it streams
 frontend/screen.js     compacting the live screen into a prompt
 frontend/journal.js    what the session remembers
-frontend/transports.js where the model runs: Ollama, or this tab
+frontend/engine.js     the engine, and the two places it can run: this machine, or this tab
 frontend/llm-worker.js the in-tab model, off the page's thread
 frontend/gpu-jobs.js   keeping GPU jobs short enough that the driver does not reset the GPU
 frontend/apis.js       live data, and shrinking it to fit a prompt

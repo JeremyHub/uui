@@ -42,7 +42,7 @@ async function* resume(first, iterator) {
  * The URL is reported through `request` rather than the stream, because the caller has
  * to act on it before any of the reply can be used.
  */
-async function* replyStream({ transport, system, user, maxTokens, temperature, signal, request }) {
+async function* replyStream({ engine, system, user, maxTokens, temperature, signal, request }) {
   const child = new AbortController();
   const relay = () => child.abort();
   if (signal?.aborted) return;
@@ -65,7 +65,7 @@ async function* replyStream({ transport, system, user, maxTokens, temperature, s
   };
 
   try {
-    for await (const piece of transport.chat({
+    for await (const piece of engine.chat({
       system, user, maxTokens, temperature, signal: child.signal,
     })) {
       if (decided) { yield piece; continue; }
@@ -119,13 +119,13 @@ export function buildPatchMessage({ concept, doc, action, memory }) {
  * The document around it -- doctype, head, stylesheet -- belongs to the app and is
  * already on screen before this is called, so the model writes content and nothing else.
  */
-export async function* runShell({ transport, concept, signal, getData = fetchForPrompt }) {
+export async function* runShell({ engine, concept, signal, getData = fetchForPrompt }) {
   yield { type: "phase", name: "building" };
 
   let user = `APP CONCEPT:\n${concept || "a simple demo app"}`;
   const request = {};
   const ask = (u, req) => replyStream({
-    transport, system: SHELL_SYSTEM_PROMPT, user: u,
+    engine, system: SHELL_SYSTEM_PROMPT, user: u,
     maxTokens: SHELL_MAX_TOKENS, temperature: 0.7, signal, request: req,
   })[Symbol.asyncIterator]();
 
@@ -209,10 +209,10 @@ const RETRY_NUDGE =
   "\n\nYour last reply had a #plan but no #region block, so nothing changed on screen. " +
   "Reply again, and this time include the #region line and the full new HTML under it.";
 
-async function* patchOnce({ transport, user, doc, action, signal, request = {} }) {
+async function* patchOnce({ engine, user, doc, action, signal, request = {} }) {
   const parser = new PatchParser();
   for await (const piece of replyStream({
-    transport, system: PATCH_SYSTEM_PROMPT, user,
+    engine, system: PATCH_SYSTEM_PROMPT, user,
     maxTokens: PATCH_MAX_TOKENS, temperature: 0.4, signal, request,
   })) {
     for (const event of parser.feed(piece)) yield guardScreen(event, { doc, action });
@@ -221,7 +221,7 @@ async function* patchOnce({ transport, user, doc, action, signal, request = {} }
 }
 
 export async function* runPatch({
-  transport, doc, concept, action, memory, signal, getData = fetchForPrompt,
+  engine, doc, concept, action, memory, signal, getData = fetchForPrompt,
 }) {
   let user = buildPatchMessage({ concept, doc, action, memory });
   yield { type: "phase", name: "updating" };
@@ -229,7 +229,7 @@ export async function* runPatch({
   const produced = { any: false };
   const run = async function* (message, request) {
     for await (const event of patchOnce({
-      transport, user: message, doc, action, signal, request,
+      engine, user: message, doc, action, signal, request,
     })) {
       produced.any = produced.any || event.type === "region" || event.type === "screen";
       yield event;

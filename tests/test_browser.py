@@ -459,24 +459,24 @@ async def test_in_tab_inference_is_not_offered_without_a_working_adapter(fake, p
     await page.goto(f"http://localhost:{PORT}/", wait_until="load")
     await page.wait_for_function("document.getElementById('engine').options.length > 0")
     engines = await page.evaluate("[...document.getElementById('engine').options].map(o => o.value)")
-    assert engines == ["ollama"]
+    assert engines == ["server"]
 
 
 @pytest.mark.asyncio
 async def test_the_picker_takes_the_largest_model_that_fits(fake, page):
     await page.goto(f"http://localhost:{PORT}/", wait_until="load")
     picked = await page.evaluate("""(async () => {
-      const m = await import('./transports.js');
+      const m = await import('./engine.js');
       const models = [
-        { id: 'tiny-Instruct', vramMB: 400, lowResource: true },
-        { id: 'mid-Instruct', vramMB: 1600, lowResource: false },
-        { id: 'big-Instruct', vramMB: 3000, lowResource: false },
-        { id: 'huge-Instruct', vramMB: 9000, lowResource: false },
+        { id: 'tiny-Instruct', sizeMB: 400, lowResource: true },
+        { id: 'mid-Instruct', sizeMB: 1600, lowResource: false },
+        { id: 'big-Instruct', sizeMB: 3000, lowResource: false },
+        { id: 'huge-Instruct', sizeMB: 9000, lowResource: false },
       ];
       return {
-        roomy: m.pickWebLLMModel(models, 4000).id,
-        tight: m.pickWebLLMModel(models, 1800).id,
-        none: m.pickWebLLMModel(models, 100).id,
+        roomy: m.pickModel(models, 4000).id,
+        tight: m.pickModel(models, 1800).id,
+        none: m.pickModel(models, 100).id,
       };
     })()""")
     assert picked["roomy"] == "big-Instruct", "left capacity on the table"
@@ -492,11 +492,11 @@ async def test_the_picker_avoids_models_too_small_to_follow_the_format(fake, pag
     # a model that fits comfortably but cannot answer is not the better choice.
     await page.goto(f"http://localhost:{PORT}/", wait_until="load")
     picked = await page.evaluate("""(async () => {
-      const m = await import('./transports.js');
-      return m.pickWebLLMModel([
-        { id: 'tiny-Instruct', vramMB: 360, lowResource: true },
-        { id: 'small-Instruct', vramMB: 580, lowResource: true },
-        { id: 'proper-Instruct', vramMB: 1900, lowResource: false },
+      const m = await import('./engine.js');
+      return m.pickModel([
+        { id: 'tiny-Instruct', sizeMB: 360, lowResource: true },
+        { id: 'small-Instruct', sizeMB: 580, lowResource: true },
+        { id: 'proper-Instruct', sizeMB: 1900, lowResource: false },
       ], 4000).id;
     })()""")
     assert picked == "proper-Instruct"
@@ -511,7 +511,7 @@ async def test_the_budget_is_not_inflated_past_what_the_card_holds(fake, page):
     # wait ending in nothing.
     await page.goto(f"http://localhost:{PORT}/", wait_until="load")
     budgets = await page.evaluate("""(async () => {
-      const m = await import('./transports.js');
+      const m = await import('./engine.js');
       const GB = 1024 * 1024 * 1024;
       return {
         card4gb: m.budgetFromLimits({ maxBufferSize: 4 * GB, maxStorageBufferBindingSize: 4 * GB }),
@@ -533,7 +533,7 @@ async def test_models_this_device_cannot_start_are_not_offered(fake, page):
     # gigabyte-scale download -- the most expensive way possible to find out.
     await page.goto(f"http://localhost:{PORT}/", wait_until="load")
     listed = await page.evaluate("""(async () => {
-      const m = await import('./transports.js');
+      const m = await import('./engine.js');
       const entries = [
         { model_id: 'A-Instruct-q4f16_1-MLC', vram_required_MB: 900 },
         { model_id: 'A-Instruct-q4f32_1-MLC', vram_required_MB: 1100 },
@@ -556,10 +556,10 @@ async def test_a_coder_model_is_preferred_at_the_same_size(fake, page):
     # reply format much better.
     await page.goto(f"http://localhost:{PORT}/", wait_until="load")
     picked = await page.evaluate("""(async () => {
-      const m = await import('./transports.js');
-      return m.pickWebLLMModel([
-        { id: 'Generic-3B-Instruct', vramMB: 2000, lowResource: false },
-        { id: 'Qwen2.5-Coder-3B-Instruct', vramMB: 1900, lowResource: false },
+      const m = await import('./engine.js');
+      return m.pickModel([
+        { id: 'Generic-3B-Instruct', sizeMB: 2000, lowResource: false },
+        { id: 'Qwen2.5-Coder-3B-Instruct', sizeMB: 1900, lowResource: false },
       ], 4000).id;
     })()""")
     assert "Coder" in picked
@@ -674,7 +674,7 @@ async def test_a_model_that_asks_for_data_gets_it_and_is_asked_again(fake, page,
 
 
 @pytest.mark.asyncio
-async def test_a_refused_url_is_reported_to_the_model_not_hidden(fake, page):
+async def test_data_that_could_not_be_had_is_reported_to_the_model_not_hidden(fake, page):
     # Told the data is unavailable the model writes a page that says so. Given silence
     # it invents the numbers, which is the one outcome worth going out of the way to
     # avoid for something presented as real data.
@@ -683,7 +683,8 @@ async def test_a_refused_url_is_reported_to_the_model_not_hidden(fake, page):
     def reply(_prompt):
         asked["count"] += 1
         if asked["count"] == 1:
-            return "#fetch https://evil.example.net/secrets"
+            # Refused without touching the network, so the suite stays offline.
+            return "#fetch file:///etc/passwd"
         return "#plan say so\n#region results\n<p>no data</p>\n#end"
 
     scripted(fake)
@@ -694,7 +695,7 @@ async def test_a_refused_url_is_reported_to_the_model_not_hidden(fake, page):
     await watcher.turns_taken(lambda: click_text(page, "Open Results"))
 
     followup = await wait_for_prompt(fake, "unavailable")
-    assert "not on the allowed" in followup
+    assert "Only http and https URLs can be fetched" in followup
 
 
 # --- the failure that destroys work ----------------------------------------

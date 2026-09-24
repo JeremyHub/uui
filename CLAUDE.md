@@ -13,6 +13,10 @@ them to.
 - the protocol lives in `frontend/`, not the backend, so a static copy of that directory
   is a working app. do not move any of it back to Python -- two implementations of the
   same protocol is the thing that arrangement exists to avoid
+- there is one engine (`frontend/engine.js`). the server and the tab are hosts, and a host
+  only lists models and loads one. loops, prompts, streaming, aborts and model choice are
+  shared code; never branch on which host is running anywhere else
+- `/fetch` has no allowlist. the model may call any API it wants
 - prompts leak, and position matters: naming example region ids got them rendered as
   visible nav links, and appending an API catalogue to the end of the shell prompt pushed
   the interactivity rules into the middle, where a 3B model stopped following them

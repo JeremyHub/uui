@@ -84,10 +84,10 @@ async def open_site(url, args):
 @pytest.mark.asyncio
 async def test_with_no_server_the_app_runs_the_model_in_the_tab(static_site):
     state = await open_site(static_site, GPU_ARGS)
-    assert state["engines"] == ["webllm"], (
+    assert state["engines"] == ["tab"], (
         "a choice that cannot work was still offered: there is no server to reach Ollama"
     )
-    assert state["selected"] == "webllm"
+    assert state["selected"] == "tab"
     assert state["model"] == "auto", "no model was chosen, so nothing could be started"
     assert not state["errors"], state["errors"]
 

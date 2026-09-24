@@ -10,8 +10,9 @@
 // Served as static files there is no server to ask, so it tries the API directly and
 // takes what it can get.
 
-// Advertised to the model in the prompt. Public, key-free, read-only, and stable enough
-// to name in a prompt that is not going to be revised often.
+// Advertised to the model in the prompt as examples, not as a limit: any URL it names is
+// fetched. These are public, key-free, and stable enough to name in a prompt that is not
+// going to be revised often.
 export const KNOWN_APIS = [
   ["https://api.open-meteo.com/v1/forecast?latitude=51.5&longitude=-0.13&current=temperature_2m,weather_code",
    "weather now and forecast, by latitude/longitude, no key"],

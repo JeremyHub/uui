@@ -76,7 +76,7 @@ export class Journal {
    * it. On failure the journal is left exactly as it was -- losing the older past
    * quietly would be worse than a prompt that stays a bit too long.
    */
-  async compact(transport, signal) {
+  async compact(engine, signal) {
     if (!this.needsCompaction()) return false;
     const older = this.entries.slice(0, -this.verbatim);
     if (!older.length) return false;
@@ -89,7 +89,7 @@ export class Journal {
       ].join("\n\n");
 
       let text = "";
-      for await (const piece of transport.chat({
+      for await (const piece of engine.chat({
         system: COMPACTION_PROMPT, user, maxTokens: 220, temperature: 0.2, signal,
       })) {
         text += piece;

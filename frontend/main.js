@@ -10,17 +10,14 @@ import {
 } from "./dom.js";
 import { Journal } from "./journal.js";
 import { SHELL_MAX_TOKENS, runPatch, runShell } from "./turn.js";
-import {
-  createOllamaTransport, createWebLLMTransport, listWebLLMModels, pickWebLLMModel,
-  webGPUCapability,
-} from "./transports.js";
+import { createEngine, pickModel, serverHost, tabHost, webGPUCapability } from "./engine.js";
 
 const appEl = document.getElementById("app");
 const statusEl = document.getElementById("status");
 const transcriptEl = document.getElementById("transcript");
 const bootstrapEl = document.getElementById("bootstrap");
 const speculateEl = document.getElementById("speculate");
-const engineEl = document.getElementById("engine");
+const hostEl = document.getElementById("engine");
 const modelEl = document.getElementById("model");
 
 const delegated = new WeakSet();   // documents whose click/submit delegation is live
@@ -28,11 +25,11 @@ let concept = "";
 const journal = new Journal();     // what the session has established, compacted as it grows
 const log = [];                    // debug transcript
 let busy = false;
-let transport = null;
+let engine = null;
 
 function renderTranscript() {
   transcriptEl.textContent = JSON.stringify({
-    concept, engine: transport?.label,
+    concept, engine: engine?.label,
     memory: journal.summary, recent: journal.entries.map((e) => journal.line(e)),
     log: log.slice(-12),
   }, null, 2);
@@ -134,22 +131,12 @@ function option(value, label, extra = {}) {
   return el;
 }
 
-// Whether this copy of the app has a server behind it. Served as plain static files --
-// from a file:// path, a CDN, someone's GitHub Pages -- there is nothing for Ollama to
-// talk to, and in-tab inference is the only thing that can work.
-let backendReachable = null;
+// Where the model can run. The engine is the same code on every host; a host only says
+// what models it has and how to start one -- see engine.js.
+const hosts = new Map();
 
-async function ollamaModels() {
-  try {
-    const response = await fetch("models");
-    if (!response.ok) throw new Error(String(response.status));
-    const data = await response.json();
-    backendReachable = true;
-    return data.models ?? [];
-  } catch {
-    backendReachable = false;
-    return [];
-  }
+function currentHost() {
+  return hosts.get(hostEl.value);
 }
 
 // Auto is the default because the honest answer for most people is "whichever one
@@ -167,83 +154,81 @@ function populateModels(known = null) {
 }
 
 async function fillModels(known) {
-  const engine = engineEl.value;
+  const host = currentHost();
   modelEl.replaceChildren(option("", "loading…"));
   modelEl.disabled = true;
 
-  if (engine === "ollama") {
-    const models = known ?? await ollamaModels();
-    modelEl.replaceChildren(...(models.length
-      ? models.map((m) => option(m.id, `${m.id} (${(m.sizeMB / 1000).toFixed(1)} GB)`))
-      : [option("", "no models pulled")]));
-    // Ollama serves one model at a time on a small card; the one already resident is
-    // almost always the right default.
-    const preferred = models.find((m) => /qwen2\.5-coder/.test(m.id)) ?? models[0];
-    if (preferred) modelEl.value = preferred.id;
-  } else {
-    const models = await listWebLLMModels({ f16: gpu.f16 });
-    const budget = gpu.budgetMB;
-    const auto = pickWebLLMModel(models, budget);
-    modelEl.replaceChildren(
-      option("auto", auto ? `Auto · ${auto.id}` : "Auto"),
-      ...models.map((m) => option(
-        m.id,
-        m.vramMB ? `${m.id} (${(m.vramMB / 1024).toFixed(1)} GB)` : m.id,
-        { disabled: m.vramMB !== null && m.vramMB > budget * 1.3 },
-      )),
-    );
-    modelEl.value = "auto";
-    modelEl.dataset.auto = auto?.id ?? "";
+  let models = [];
+  try {
+    models = known ?? await host.listModels();
+  } catch (e) {
+    console.warn("could not list models", e);
   }
+  if (!models.length) {
+    modelEl.replaceChildren(option("", "no models available"));
+    modelEl.dataset.auto = "";
+    modelEl.disabled = false;
+    return;
+  }
+  const auto = pickModel(models, host.budgetMB);
+  modelEl.replaceChildren(
+    option("auto", auto ? `Auto · ${auto.id}` : "Auto"),
+    ...models.map((m) => option(
+      m.id,
+      m.sizeMB ? `${m.id} (${(m.sizeMB / 1024).toFixed(1)} GB)` : m.id,
+      { disabled: host.strictBudget && m.sizeMB !== null && m.sizeMB > host.budgetMB * 1.3 },
+    )),
+  );
+  modelEl.value = "auto";
+  modelEl.dataset.auto = auto?.id ?? "";
   modelEl.disabled = false;
 }
 
-async function buildTransport() {
-  if (engineEl.value === "ollama") {
-    return createOllamaTransport({ endpoint: "chat", model: modelEl.value });
-  }
+function buildEngine() {
   const modelId = modelEl.value === "auto" ? modelEl.dataset.auto : modelEl.value;
-  if (!modelId) throw new Error("no in-tab model is available on this device");
-  return createWebLLMTransport({ modelId });
+  if (!modelId) throw new Error(`no model is available ${currentHost().label.toLowerCase()}`);
+  return createEngine(currentHost(), modelId);
 }
 
-async function ensureTransportReady() {
-  if (!transport) transport = await buildTransport();
-  if (transport.ready) return;
+async function ensureEngineReady() {
+  if (!engine) engine = buildEngine();
+  if (engine.ready) return;
 
-  loading.show("Loading the model", {
-    detail: gpu.software
-      ? "No GPU available, so this will run on the CPU and be very slow."
-      : "First time only — the weights are cached after this.",
-  });
-  await transport.prepare(({ fraction, text }) => {
+  // Delayed so a load that is over in moments -- the server's, or a cached one already
+  // under way -- does not flash a card up for nothing.
+  loading.show("Loading the model", { detail: currentHost().loadingDetail, delay: 150 });
+  await engine.prepare(({ fraction, text }) => {
     if (fraction > 0) loading.progress(fraction);
     if (text) loading.detail(text);
   });
 }
 
-let gpu = { ok: false, budgetMB: 0 };
-
 async function setupEngineChoice() {
-  const [capability, models] = await Promise.all([webGPUCapability(), ollamaModels()]);
-  gpu = capability;
+  const gpu = await webGPUCapability();
+  // Whether this copy of the app has a server behind it. Served as plain static files --
+  // from a file:// path, a CDN, someone's GitHub Pages -- there is nothing to ask, and
+  // the tab is the only place a model can run.
+  const server = serverHost({
+    // The server usually runs on the card this tab can see, so its size steers Auto
+    // there too. A software adapter says nothing about the real card.
+    budgetMB: gpu.ok && !gpu.software ? gpu.budgetMB : Infinity,
+  });
+  const serverModels = await server.listModels().catch(() => null);
 
-  const options = [];
-  if (backendReachable) options.push(option("ollama", "Ollama (this machine)"));
+  if (serverModels) hosts.set(server.id, server);
   if (gpu.ok) {
-    options.push(option("webllm", gpu.software
-      ? "In this tab (no GPU — very slow)"
-      : "In this tab (WebGPU)"));
+    const tab = tabHost(gpu);
+    hosts.set(tab.id, tab);
   }
-  if (!options.length) {
-    options.push(option("ollama", "Ollama (this machine)"));
-  }
-  engineEl.replaceChildren(...options);
-  engineEl.title = gpu.ok ? "Where the model runs" : `Where the model runs. ${gpu.why}`;
-  engineEl.value = backendReachable ? "ollama" : (gpu.ok ? "webllm" : "ollama");
-  engineEl.addEventListener("change", () => { dropTransport(); populateModels().then(warmUp); });
-  modelEl.addEventListener("change", () => { dropTransport(); warmUp(); });
-  await populateModels(models);
+  // Nothing can run here. Offer the server anyway, so the failure says what to start.
+  if (!hosts.size) hosts.set(server.id, server);
+
+  hostEl.replaceChildren(...[...hosts.values()].map((h) => option(h.id, h.label)));
+  hostEl.title = gpu.ok ? "Where the model runs" : `Where the model runs. ${gpu.why}`;
+  hostEl.value = hosts.keys().next().value;
+  hostEl.addEventListener("change", () => { dropEngine(); populateModels().then(warmUp); });
+  modelEl.addEventListener("change", () => { dropEngine(); warmUp(); });
+  await populateModels(hostEl.value === server.id ? serverModels ?? [] : null);
   warmUp();
 }
 
@@ -252,11 +237,11 @@ async function setupEngineChoice() {
 // types and then they wait anyway, so start as soon as the choice is made. Nothing
 // uncached is fetched unasked: that is a multi-gigabyte download.
 async function warmUp() {
-  if (transport || engineEl.value !== "webllm" || gpu.software || busy) return;
+  if (engine || busy || !currentHost()?.warmUp) return;
   try {
-    const candidate = await buildTransport();
-    if (transport || !(await candidate.isCached())) return;
-    transport = candidate;
+    const candidate = buildEngine();
+    if (engine || !(await candidate.isCached())) return;
+    engine = candidate;
     await candidate.prepare();
   } catch (e) {
     console.warn("could not load the model ahead of time", e);
@@ -264,9 +249,9 @@ async function warmUp() {
 }
 
 // The one on the card has to go before another can fit.
-function dropTransport() {
-  transport?.dispose?.();
-  transport = null;
+function dropEngine() {
+  engine?.dispose?.();
+  engine = null;
 }
 
 // --- guessing ahead ---------------------------------------------------------
@@ -313,7 +298,7 @@ async function generatePrediction(doc, el, myRun) {
   const events = [];
   try {
     for await (const event of runPatch({
-      transport, doc, concept, action, memory: journal.toPrompt(), signal: specAbort.signal,
+      engine, doc, concept, action, memory: journal.toPrompt(), signal: specAbort.signal,
     })) {
       if (myRun !== specRun) return false;
       events.push(event);
@@ -334,10 +319,10 @@ async function generatePrediction(doc, el, myRun) {
 // bound, then guess at the next click. Folding the journal is one short call and it
 // shrinks every prompt after it, so it earns its place ahead of the guessing.
 async function speculate(doc) {
-  if (!transport) return;
+  if (!engine) return;
   const myRun = ++specRun;
   if (journal.needsCompaction()) {
-    await journal.compact(transport);
+    await journal.compact(engine);
     renderTranscript();
     if (myRun !== specRun) return;
   }
@@ -356,7 +341,7 @@ async function speculate(doc) {
 // region, that spurious hover cancelled the idle pass moments after it started, and the
 // page ended up with one guess instead of three.
 function predictOnHover(doc, el) {
-  if (!speculateEl.checked || busy || isLocal(el) || !transport) return;
+  if (!speculateEl.checked || busy || isLocal(el) || !engine) return;
   const action = { event: "click", elementData: describeElement(el), formValues: collectFormState(doc) };
   // Already guessed: jumping the queue would cancel the idle pass to redo finished work.
   if (predictions.has(signature(action))) return;
@@ -418,10 +403,10 @@ async function sendAction(action) {
   let plan = "", written = 0;
   try {
     // Normally already loaded. Not after the GPU has been lost, which takes the model
-    // with it -- see transports.js.
-    await ensureTransportReady();
+    // with it -- see engine.js.
+    await ensureEngineReady();
     loading.show("Updating", { subtle: true, delay: 180 });
-    for await (const event of runPatch({ transport, doc, concept, action, memory: journal.toPrompt() })) {
+    for await (const event of runPatch({ engine, doc, concept, action, memory: journal.toPrompt() })) {
       if (event.type === "plan") { plan = event.text; timerLabel = plan.slice(0, 80); loading.detail(plan); }
       else if (event.type === "fetching") {
         timerLabel = "fetching live data";
@@ -457,7 +442,7 @@ async function startFromConcept() {
   try {
     await engineChosen;
     await modelsReady;
-    await ensureTransportReady();
+    await ensureEngineReady();
   } catch (e) {
     loading.hide();
     setStatus(`could not start: ${e.message}`);
@@ -487,7 +472,7 @@ async function startFromConcept() {
   doc.write(documentHead(concept));
   let written = 0;
   try {
-    for await (const event of runShell({ transport, concept })) {
+    for await (const event of runShell({ engine, concept })) {
       if (event.type === "fetching") {
         loading.detail(`Fetching ${new URL(event.url).host}…`);
         loading.indeterminate();
