@@ -8,14 +8,24 @@ Heavily inspired by [Steve Sanderson's Vibe OS](https://www.youtube.com/watch?v=
 
 ## How it works
 
-The app owns the document: the head and a shared stylesheet (`frontend/base.css`) go into
-a sandboxed iframe before the model is asked anything, and the model writes only body
-content, split into `<section data-region="...">` blocks. The first screen streams straight
-into the iframe; each click after that sends the model a compacted view of the live screen
-plus a short session memory, and it replies with just the regions to replace
-(`#plan ...`, `#region <id> ... #end`), which are applied as they stream. Purely local
-interactions like tabs and toggles are handled by the page's own scripts and never reach
-the model, and a reply can start with `#fetch <url>` to pull in live data before answering.
+1. **You describe an app.** The model writes the first screen, which streams into the page
+   as it is generated. The styling comes from the app, so the model only writes content.
+2. **You click around.** Each click sends the model what is on screen and what happened so
+   far in the session.
+3. **Only what changes is rewritten.** The page is split into regions, and the model
+   replaces just the ones that need to change, so most clicks take seconds rather than
+   a full redraw.
+
+Along the way:
+
+- **Simple interactions stay local.** Tabs, toggles and sorting run in the page itself
+  and never wait on the model.
+- **It can use real data.** The model can ask the app to fetch an API before it answers,
+  so a weather page shows the actual weather.
+- **It remembers the session.** Earlier choices are kept in a short summary, so the app
+  stays consistent as you go.
+- **It runs anywhere.** The model runs on your machine through Ollama (or Claude), or
+  entirely in the browser tab with no server.
 
 ## How to run it
 
