@@ -344,7 +344,7 @@ const PREFILL_CHUNK_TOKENS = 128;
 export function tabHost(gpu, { prefillChunkTokens = PREFILL_CHUNK_TOKENS, useWorker = true } = {}) {
   return {
     id: "tab",
-    label: gpu.software ? "In this tab (no GPU — very slow)" : "In this tab",
+    label: gpu.software ? "In this tab (CPU only — very slow)" : "In this tab",
     budgetMB: gpu.budgetMB,
     // A model too big for the card fails to allocate after a multi-gigabyte download.
     strictBudget: true,
@@ -352,7 +352,7 @@ export function tabHost(gpu, { prefillChunkTokens = PREFILL_CHUNK_TOKENS, useWor
     // load is a long wait nobody asked for.
     warmUp: !gpu.software,
     loadingDetail: gpu.software
-      ? "No GPU available, so this will run on the CPU and be very slow."
+      ? "Your browser is running WebGPU on the CPU, not the graphics card, so this will be very slow."
       : "First time only — the weights are cached after this.",
 
     async listModels() {

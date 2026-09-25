@@ -75,6 +75,8 @@ async def open_site(url, args):
                 "[...document.getElementById('engine').options].map(o => o.value)"),
             "selected": await page.evaluate("document.getElementById('engine').value"),
             "model": await page.evaluate("document.getElementById('model').value"),
+            "notice": await page.evaluate(
+                "(n => n.hidden ? null : n.innerText)(document.getElementById('notice'))"),
             "errors": errors,
         }
         await browser.close()
@@ -89,6 +91,25 @@ async def test_with_no_server_the_app_runs_the_model_in_the_tab(static_site):
     )
     assert state["selected"] == "tab"
     assert state["model"] == "auto", "no model was chosen, so nothing could be started"
+    assert state["notice"] is None, "a working graphics card was reported as a problem"
+    assert not state["errors"], state["errors"]
+
+
+@pytest.mark.asyncio
+async def test_without_webgpu_the_page_says_what_to_turn_on(static_site):
+    # Plain headless Chrome, like Chrome on Linux out of the box: no adapter at all.
+    state = await open_site(static_site, ["--no-sandbox"])
+    assert state["notice"], "nothing can run, and nothing on the page said why"
+    assert "enable-unsafe-webgpu" in state["notice"], state["notice"]
+    assert not state["errors"], state["errors"]
+
+
+@pytest.mark.asyncio
+async def test_webgpu_on_the_cpu_is_called_out(static_site):
+    # WebGPU on without Vulkan: Chrome hands back SwiftShader, which works, very slowly.
+    state = await open_site(static_site, ["--no-sandbox", "--enable-unsafe-webgpu"])
+    assert state["engines"] == ["tab"]
+    assert state["notice"] and "CPU" in state["notice"], state["notice"]
     assert not state["errors"], state["errors"]
 
 

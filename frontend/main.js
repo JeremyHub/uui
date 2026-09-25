@@ -152,6 +152,63 @@ function currentHost() {
   return hosts.get(hostEl.value);
 }
 
+// --- when the tab cannot use the graphics card ------------------------------------
+//
+// Served statically, the model runs in the tab over WebGPU, and whether the tab gets the
+// graphics card is a browser setting. Chrome on Linux ships with WebGPU off; turning it
+// on without Vulkan gets SwiftShader, which runs on the CPU. Both used to show up as a
+// dropdown saying "no models available" or "no GPU", which reads as the app being broken
+// or the machine lacking a card, when the fix is two flags and a relaunch. So say that,
+// where it is seen, and in terms of what to turn on.
+
+function gpuNotice(gpu) {
+  if (gpu.ok && !gpu.software) return null;
+  const ua = navigator.userAgent;
+  const chromium = /Chrome\//.test(ua);
+  const scheme = /Edg\//.test(ua) ? "edge" : "chrome";
+  const browser = scheme === "edge" ? "Edge" : "Chrome";
+  const flag = (name) => ({ code: `${scheme}://flags/#${name}` });
+
+  let fix;
+  if (chromium && /Linux/.test(ua) && !/Android|CrOS/.test(ua)) {
+    fix = gpu.ok
+      ? ["Turn on ", flag("enable-vulkan"), ` too, then relaunch ${browser}.`]
+      : ["Turn on ", flag("enable-unsafe-webgpu"), " and ", flag("enable-vulkan"),
+        `, then relaunch ${browser}.`];
+  } else if (chromium) {
+    fix = [`Check that "Use graphics acceleration when available" is on in ${browser}'s `,
+      "system settings, and that ", { code: `${scheme}://gpu` },
+      " lists WebGPU as hardware accelerated."];
+  } else {
+    fix = ["A current Chrome or Edge is the most reliable way to get it."];
+  }
+
+  return gpu.ok
+    ? { title: "Running on the CPU, not your graphics card",
+      body: ["Your browser offered WebGPU without the card behind it, so models will be ",
+        "very slow. ", ...fix] }
+    : { title: "Your browser isn't giving this page WebGPU",
+      body: ["The model runs on your graphics card through WebGPU, so nothing can run until ",
+        "it's on. ", ...fix, " Or run the uui server, where Ollama runs the model."] };
+}
+
+function showNotice(notice) {
+  const el = document.getElementById("notice");
+  el.hidden = !notice;
+  if (!notice) return;
+  const title = document.createElement("strong");
+  title.textContent = notice.title;
+  const body = document.createElement("span");
+  for (const part of notice.body) {
+    if (typeof part === "string") { body.append(part); continue; }
+    // A page cannot link to chrome:// URLs, so make them easy to copy instead.
+    const code = document.createElement("code");
+    code.textContent = part.code;
+    body.append(code);
+  }
+  el.replaceChildren(title, body);
+}
+
 // Auto is the default because the honest answer for most people is "whichever one
 // works", and the wrong choice here is a multi-gigabyte download that ends in an
 // out-of-memory error.
@@ -161,10 +218,8 @@ function currentHost() {
 // which is false and reads as final, so a start waits on whichever listing is current.
 let modelsReady = Promise.resolve();
 
-// Set when neither host can run anything. Served statically with no WebGPU adapter --
-// Chrome on Linux ships with WebGPU off -- the only host left is a server that is not
-// there, and "no models available" reads as the app being broken rather than as a
-// browser setting.
+// Set when neither host can run anything: the reason, for the model picker and a start
+// that has nothing to start.
 let unavailable = "";
 
 function populateModels(known = null) {
@@ -248,10 +303,11 @@ async function setupEngineChoice() {
   // Nothing can run here. Offer the server anyway, so the failure says what to start.
   if (!hosts.size) {
     hosts.set(server.id, server);
-    unavailable = `${gpu.why} Models run in the tab over WebGPU: enable it ` +
-      "(Chrome on Linux: chrome://flags/#enable-unsafe-webgpu and #enable-vulkan), " +
-      "or run the uui server.";
+    unavailable = gpu.why;
   }
+  // With a server there is a fast option whatever the tab can do. Without one, the tab is
+  // all there is, and a browser setting is the difference between working and not.
+  if (!serverModels) showNotice(gpuNotice(gpu));
 
   hostEl.replaceChildren(...[...hosts.values()].map((h) => option(h.id, h.label)));
   hostEl.title = gpu.ok ? "Where the model runs" : `Where the model runs. ${gpu.why}`;

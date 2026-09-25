@@ -18,6 +18,14 @@ body {
   border: 1px solid #e3e5ea; border-radius: 6px; background: #fff; }
 #topbar select:disabled { color: #9aa1ae; }
 
+#notice { flex: 0 0 auto; margin: 10px 16px 0; padding: 10px 14px; font-size: 13px;
+  line-height: 1.5; color: #5c3d00; background: #fff7e0; border: 1px solid #f0d58a;
+  border-radius: 8px; }
+#notice[hidden] { display: none; }
+#notice strong { display: block; margin-bottom: 2px; }
+#notice code { font-size: 12px; padding: 1px 5px; border-radius: 4px; background: #fdecc0;
+  user-select: all; overflow-wrap: anywhere; }
+
 #bootstrap { flex: 0 0 auto; display: flex; gap: 8px; padding: 10px 16px; }
 #bootstrap input { flex: 1; padding: 9px 12px; font: inherit; font-size: 14px;
   border: 1px solid #e3e5ea; border-radius: 8px; }
