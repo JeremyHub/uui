@@ -1,10 +1,10 @@
 # UUI
 
-An app that generates itself as you use it. You describe what it should be, a model writes
-the first screen, and every click after that rewrites only the parts of the page that
-change. The model runs either on your machine through Ollama (or Claude, via the Claude
-Code CLI) behind a small Python server, or entirely in the browser tab over WebGPU with no
-server at all.
+An app that generates itself as you use it. Ask it to create a UI for you for a new or
+existing app and interact with the application it created. Each page I is generated on the fly
+by the model.
+
+Heavily inspired by [Steve Sanderson's Vibe OS](https://www.youtube.com/watch?v=zh6fMtL_cSM)
 
 ## How it works
 
