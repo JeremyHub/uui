@@ -9,12 +9,10 @@ Heavily inspired by [Steve Sanderson's Vibe OS](https://www.youtube.com/watch?v=
 ## How it works
 
 1. **You describe an app.** The model writes the first screen, which streams into the page
-   as it is generated. The styling comes from the app, so the model only writes content.
+   as it is generated.
 2. **You click around.** Each click sends the model what is on screen and what happened so
    far in the session.
-3. **Only what changes is rewritten.** The page is split into regions, and the model
-   replaces just the ones that need to change, so most clicks take seconds rather than
-   a full redraw.
+3. **The page reacts.** The model rewrites the page to react to your input.
 
 Along the way:
 
@@ -24,8 +22,8 @@ Along the way:
   so a weather page shows the actual weather.
 - **It remembers the session.** Earlier choices are kept in a short summary, so the app
   stays consistent as you go.
-- **It runs anywhere.** The model runs on your machine through Ollama (or Claude), or
-  entirely in the browser tab with no server.
+- **It runs anywhere.** The model runs on your machine through Ollama, or
+  entirely in the browser tab with no server. You can also use your claude subscription.
 
 ## How to run it
 
