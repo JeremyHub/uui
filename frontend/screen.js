@@ -12,6 +12,8 @@
 // This walks the real DOM. The server-side version parsed HTML text with a hand-written
 // parser to do the same job, which is most of what made it long.
 
+import { maskSecret } from "./dom.js";
+
 const VOID = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input",
                       "link", "meta", "param", "source", "track", "wbr"]);
 // Attributes that tell the model something about how to write matching markup.
@@ -40,6 +42,23 @@ function truncate(text, limit) {
   return text.length <= limit ? text : text.slice(0, limit) + "…";
 }
 
+const attr = (value) => String(value).replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+
+// What the user has done to a control lives in its properties, not its attributes:
+// typing into <input value=""> leaves the markup saying value="", and ticking a box
+// leaves it unticked. The screen is what the model reads the page from, so it shows the
+// page as it is now -- these replace the attributes they shadow.
+function liveState(node) {
+  const tag = node.tagName;
+  if (tag === "INPUT") {
+    if (node.type === "checkbox" || node.type === "radio") return { checked: node.checked };
+    if (/^(submit|button|reset|image|file)$/.test(node.type)) return null;
+    return { value: node.type === "password" ? maskSecret(node.value) : node.value };
+  }
+  if (tag === "OPTION") return { selected: node.selected };
+  return null;
+}
+
 function serialize(node, out, keep, root) {
   if (node.nodeType === Node.TEXT_NODE) {
     const text = node.textContent.replace(/\s+/g, " ").trim();
@@ -56,14 +75,25 @@ function serialize(node, out, keep, root) {
   }
 
   const tag = node.tagName.toLowerCase();
+  const live = liveState(node);
   let attrs = "";
   for (const { name, value } of node.attributes) {
+    if (live && name in live) continue;
     if (KEEP_ATTRS.has(name) || name.startsWith("data-") || name.startsWith("aria-")) {
       attrs += value ? ` ${name}="${value}"` : ` ${name}`;
     }
   }
+  for (const [name, value] of Object.entries(live ?? {})) {
+    if (value === true) attrs += ` ${name}`;
+    else if (value) attrs += ` ${name}="${attr(truncate(value, MAX_TEXT))}"`;
+  }
   out.push(`<${tag}${attrs}>`);
   if (VOID.has(tag)) return;
+
+  if (tag === "textarea") {
+    out.push(truncate(node.value, MAX_TEXT), "</textarea>");
+    return;
+  }
 
   if (tag === "script" || tag === "style") {
     out.push(truncate(node.textContent, tag === "script" ? MAX_SCRIPT : MAX_STYLE_BLOCK));

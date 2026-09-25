@@ -7,6 +7,7 @@ because the model is a stub rather than a 3B on the GPU.
 """
 
 import asyncio
+import json
 import os
 import re
 import socket
@@ -412,6 +413,65 @@ async def test_what_the_user_typed_survives_later_turns(fake, page):
     assert "Wintermute" in prompts_sent(fake)[-1], (
         "three turns later the app no longer knows what the user entered"
     )
+
+
+# What a generated search page looks like: nothing named, no <form>, the button beside
+# the box rather than submitting it.
+SEARCH_SHELL = """<section data-region="search">
+  <h1>Findr</h1>
+  <input class="field" placeholder="Search the web">
+  <label><input type="checkbox"> Safe search</label>
+  <select><option>Anywhere</option><option>Past week</option></select>
+  <textarea placeholder="Notes"></textarea>
+  <button class="btn primary">Search</button>
+</section>
+<section data-region="results"><p>no results yet</p></section>"""
+
+
+def section(prompt, heading):
+    """One labelled part of a patch prompt, e.g. SCREEN or USER ACTION."""
+    return prompt.split(f"{heading}:\n", 1)[1].split("\n\n", 1)[0] if f"{heading}:\n" in prompt else ""
+
+
+@pytest.mark.asyncio
+async def test_everything_the_user_did_to_the_page_reaches_the_model(fake, page):
+    # Generated controls rarely have a name or an id, and typing into a field changes its
+    # value, not its markup. Keyed on names and read from attributes, the search box
+    # reached the model empty and "Search" searched for nothing.
+    scripted(fake, shell=SEARCH_SHELL)
+    watcher = Watcher(page)
+    await start_app(page, watcher)
+
+    frame = page.frames[1]
+    await frame.fill('input[placeholder="Search the web"]', "cheap flights to lisbon")
+    await frame.check('input[type="checkbox"]')
+    await frame.select_option("select", "Past week")
+    await frame.fill("textarea", "window seat")
+    await watcher.turns_taken(lambda: click_text(page, "Search"))
+
+    prompt = [p for p in prompts_sent(fake) if "USER ACTION" in p][-1]
+    action = json.loads(section(prompt, "USER ACTION"))
+    values = list(action["formValues"].values())
+    for expected in ["cheap flights to lisbon", True, "Past week", "window seat"]:
+        assert expected in values, f"{expected!r} never reached the model: {action['formValues']}"
+
+    screen = section(prompt, "SCREEN")
+    assert 'value="cheap flights to lisbon"' in screen, f"the screen showed the box empty:\n{screen}"
+    assert "window seat" in screen
+    assert re.search(r'<input type="checkbox" checked>', screen), "the screen showed it unticked"
+    assert re.search(r"<option selected>Past week", screen), "the screen showed the old choice"
+
+
+@pytest.mark.asyncio
+async def test_a_password_is_never_sent_to_the_model(fake, page):
+    shell = SEARCH_SHELL.replace('<textarea placeholder="Notes"></textarea>',
+                                 '<input type="password" placeholder="Password">')
+    scripted(fake, shell=shell)
+    watcher = Watcher(page)
+    await start_app(page, watcher)
+    await page.frames[1].fill('input[type="password"]', "hunter2")
+    await watcher.turns_taken(lambda: click_text(page, "Search"))
+    assert not any("hunter2" in p for p in prompts_sent(fake))
 
 
 @pytest.mark.asyncio

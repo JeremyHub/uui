@@ -138,10 +138,15 @@ export function splitOversizedRegions(doc) {
   for (const region of [...doc.querySelectorAll("[data-region]")]) {
     if (doc.querySelectorAll("[data-region]").length >= MAX_REGIONS) break;
     if (region.innerHTML.length / total < OVERSIZED_SHARE) continue;
-    const kids = [...region.children].filter(
-      (c) => !["SCRIPT", "STYLE"].includes(c.tagName) && c.textContent.trim()
-    );
-    if (kids.length < 2) continue;
+    const children = [...region.children].filter((c) => !["SCRIPT", "STYLE"].includes(c.tagName));
+    const kids = children.filter((c) => c.textContent.trim() && !c.matches(FIELDS));
+    // Whatever is not promoted ends up in no region at all: missing from the screen the
+    // model reads, and out of reach of any patch. An empty spacer can go. A search box
+    // cannot -- an <input> has no text, and splitting its region around it meant the
+    // model never saw what was typed there, or that there was a box at all.
+    const stranded = children.filter((c) => !kids.includes(c) &&
+      (c.matches(`${FIELDS}, img`) || c.querySelector(`${FIELDS}, img`)));
+    if (kids.length < 2 || stranded.length) continue;
     used.delete(region.getAttribute("data-region"));
     region.removeAttribute("data-region");
     kids.forEach((kid) => {
@@ -255,23 +260,76 @@ async function* streamTurn(payload, signal) {
 // killed the instant the user actually does something -- closing the connection
 // stops Ollama generating, so the GPU is free again immediately.
 
+// --- what the user has done to the page ---------------------------------------
+//
+// Everything a person can change on a page: every field, named or not, and anything the
+// page marks as toggled. Generated pages rarely name their controls -- a search box is
+// <input placeholder="Search"> with neither name nor id -- so keying on names alone
+// dropped exactly the thing that was typed.
+
+export const FIELDS = 'input, select, textarea, [contenteditable=""], [contenteditable="true"]';
+// Their value is a label, not something the user entered.
+const NOT_INPUT = /^(submit|button|reset|image|file)$/;
+
+/** Never sent to a model. The length is enough to know something was entered. */
+export const maskSecret = (value) => (value ? `(${value.length} characters, hidden)` : "");
+
+/** What the user has put in a field, read from the field rather than its markup. */
+export function fieldValue(field) {
+  if (field.isContentEditable && !/^(INPUT|TEXTAREA|SELECT)$/.test(field.tagName)) {
+    return field.innerText.trim();
+  }
+  if (field.type === "checkbox") return field.checked;
+  if (field.type === "password") return maskSecret(field.value);
+  if (field.tagName === "SELECT") {
+    const chosen = [...field.selectedOptions].map((o) => o.value || o.textContent.trim());
+    return field.multiple ? chosen : (chosen[0] ?? "");
+  }
+  return field.value;
+}
+
+/**
+ * What to call a field: its name or id when the page gave one, or else what a person
+ * would call it -- its label, placeholder or aria-label -- so "Search the web" arrives as
+ * the key rather than the field not arriving at all.
+ */
+export function fieldKey(field) {
+  const label = field.labels?.[0]?.textContent ?? field.closest("label")?.textContent;
+  const said = field.getAttribute("aria-label") || field.getAttribute("placeholder") ||
+    label?.replace(/\s+/g, " ").trim() || field.getAttribute("title");
+  if (field.name || field.id || said) return field.name || field.id || said;
+  const region = field.closest("[data-region]")?.getAttribute("data-region");
+  const kind = field.type || field.tagName.toLowerCase();
+  return region ? `${kind} in ${region}` : kind;
+}
+
 export function collectFormState(container) {
   const state = {};
-  container.querySelectorAll("input, select, textarea").forEach((field) => {
-    const key = field.name || field.id;
-    if (!key) return;
-    if (field.type === "checkbox") state[key] = field.checked;
-    else if (field.type === "radio") {
-      if (field.checked) state[key] = field.value;
+  const claim = (key) => {
+    let unique = key, n = 2;
+    while (unique in state) unique = `${key} (${n++})`;
+    return unique;
+  };
+  container.querySelectorAll(FIELDS).forEach((field) => {
+    if (field.tagName === "INPUT" && NOT_INPUT.test(field.type)) return;
+    if (field.type === "radio") {
+      // A group shares one name and one answer, which is the button that is checked.
+      const key = field.name || fieldKey(field);
+      if (field.checked) state[key] = field.value === "on" ? fieldKey(field) : field.value;
       else if (!(key in state)) state[key] = null;
-    } else if (field.tagName === "SELECT" && field.multiple) {
-      state[key] = Array.from(field.selectedOptions).map((o) => o.value);
-    } else state[key] = field.value;
+      return;
+    }
+    state[claim(fieldKey(field))] = fieldValue(field);
   });
-  container.querySelectorAll("[aria-pressed]").forEach((el) => {
-    const key = el.name || el.id;
-    if (key) state[key] = el.getAttribute("aria-pressed") === "true";
-  });
+  // Toggles the page tracks itself, which have no value to read.
+  container.querySelectorAll('[aria-pressed], [aria-checked]:not(input), [aria-selected="true"]')
+    .forEach((el) => {
+      const key = el.name || el.id || el.getAttribute("aria-label") || el.textContent.trim().slice(0, 40);
+      if (!key) return;
+      const flag = el.getAttribute("aria-pressed") ?? el.getAttribute("aria-checked") ??
+        el.getAttribute("aria-selected");
+      state[claim(key)] = flag === "true";
+    });
   return state;
 }
 
