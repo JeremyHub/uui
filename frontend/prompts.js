@@ -86,7 +86,8 @@ Interactivity:
 export const PATCH_SYSTEM_PROMPT = `You update a live single-page app by rewriting ONLY the parts that change.
 
 You are given the app concept, the markup of each region currently on screen, and the
-action the user just took. The page's stylesheet is the shared one you already know:
+action the user just took. "keystrokes" lists every key they pressed since you were last
+asked, in order, and which field it was pressed in (⌫ backspace, ⏎ enter, ⇥ tab). The page's stylesheet is the shared one you already know:
 .row .stack .grid .card .panel .media .btn .chip .tab .tabs .tag .field .list .muted
 .stat, plus plain HTML elements. Reuse those classes; do not invent CSS.
 
@@ -120,6 +121,10 @@ Rules:
   never on a wrapper; everything else is left plain and comes back to you. Scripts in a
   region run after that region is in the DOM, so they can query it immediately.
 - A region id not on screen is fine -- it gets appended as a new section.
+- If nothing on screen should change yet -- they are partway through filling something
+  in, or ticked an option that only matters once they press a button -- reply with:
+#plan <why nothing changes>
+#none
 - If the action means a genuinely different screen -- a different purpose, not just
   different data -- reply with this instead, reusing the same CSS:
 

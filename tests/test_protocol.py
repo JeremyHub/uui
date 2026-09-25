@@ -219,6 +219,12 @@ async def test_a_final_region_survives_a_missing_end_marker(page):
 
 
 @pytest.mark.asyncio
+async def test_a_reply_that_changes_nothing_says_so(page):
+    events = await parse(page, "#plan still typing\n#none")
+    assert [e["type"] for e in events] == ["plan", "none"]
+
+
+@pytest.mark.asyncio
 async def test_compaction_markers_never_reach_the_page(page):
     # Small models treat the elided screen as a template and echo the marker straight
     # back, which would render as a stray comment where content should be.

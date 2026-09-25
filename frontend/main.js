@@ -4,9 +4,9 @@
 // knows there is a user watching. Nothing here is specific to where the model runs.
 
 import {
-  LOCAL_GRACE_MS, allControls, appendToRegion, applyRegion, applyScreen, collectFormState,
-  describeElement, ensureRegions, errorRegion, findControl, isClickable, isLocal,
-  openRegion, repairImages, runScripts, splitOversizedRegions, submitsOnEnter,
+  FIELDS, KeyLog, LOCAL_GRACE_MS, allControls, appendToRegion, applyRegion, applyScreen,
+  changeIsRequest, collectFormState, describeElement, ensureRegions, errorRegion, findControl, isClickable, isLocal,
+  keySymbol, openRegion, repairImages, runScripts, splitOversizedRegions, submitsOnEnter,
 } from "./dom.js";
 import { Journal } from "./journal.js";
 import { SHELL_MAX_TOKENS, runPatch, runShell } from "./turn.js";
@@ -38,6 +38,11 @@ let concept = "";
 const journal = new Journal();     // what the session has established, compacted as it grows
 const log = [];                    // debug transcript
 let busy = false;
+const keyLog = new KeyLog();       // keys pressed in the page since the model last saw them
+// The update in flight, while there is one: { abort, rendering, done }. Until the model
+// starts writing, nothing on screen has changed, so a newer request can replace it.
+let turn = null;
+let actionSeq = 0;
 let engine = null;
 
 function renderTranscript() {
@@ -468,17 +473,31 @@ function applyEvents(doc, events) {
 }
 
 async function sendAction(action) {
-  if (busy) return;
+  // The first screen is still being written; there is nothing to act on yet.
+  if (busy && !turn) return;
+  const mine = ++actionSeq;
+  if (turn) {
+    // Once the model is writing, the page is mid-rewrite under the overlay, and a request
+    // then is dropped like a click on the overlay. Before that it has only been deciding,
+    // so the newer request -- which carries every key since, too -- simply replaces it.
+    if (turn.rendering) return;
+    turn.abort.abort();
+    await turn.done;
+    if (mine !== actionSeq || busy) return;
+  }
   busy = true;
   cancelSpeculation();
   const doc = appEl.contentDocument;
-  const label = `${action.event} "${(action.elementData.text || "").slice(0, 40)}"`;
+  const label = `${action.event} "${(action.elementData.text || action.elementData.label || "").slice(0, 40)}"`;
   const key = signature(action);
+  const keystrokes = keyLog.take();
+  if (keystrokes.length) action = { ...action, keystrokes };
 
   if (predictions.has(key)) {
     // Already generated while the user was deciding: no model call at all.
     timerStart = performance.now();
     const plan = applyEvents(doc, predictions.get(key));
+    keyLog.consumed(keystrokes.length);
     journal.add({ label, plan, inputs: action.formValues });
     predictions.clear();
     stopTimer("instant (predicted)");
@@ -490,36 +509,67 @@ async function sendAction(action) {
   }
   predictions.clear();
 
-  startTimer("updating");
+  const current = { abort: new AbortController(), rendering: false };
+  let finished;
+  current.done = new Promise((resolve) => { finished = resolve; });
+  turn = current;
+
+  // No overlay while the model decides. It may decide nothing should change -- Enter in
+  // a half-filled form, a box ticked ahead of pressing Search -- and covering the page
+  // for that reads as the app stalling on every key. The status line shows it thinking;
+  // the overlay comes up once there is new content on its way.
+  const rendering = () => {
+    if (current.rendering) return;
+    current.rendering = true;
+    loading.show("Updating", { detail: plan, subtle: true, delay: 180 });
+  };
+
+  startTimer("thinking");
   const touched = [];
   let plan = "", written = 0;
   try {
     // Normally already loaded. Not after the GPU has been lost, which takes the model
     // with it -- see engine.js.
     await ensureEngineReady();
-    loading.show("Updating", { subtle: true, delay: 180 });
-    for await (const event of runPatch({ engine, doc, concept, action, memory: journal.toPrompt() })) {
+    for await (const event of runPatch({
+      engine, doc, concept, action, memory: journal.toPrompt(), signal: current.abort.signal,
+    })) {
       if (event.type === "plan") { plan = event.text; timerLabel = plan.slice(0, 80); loading.detail(plan); }
+      else if (event.type === "phase" || event.type === "none") continue;
       else if (event.type === "fetching") {
+        rendering();
         timerLabel = "fetching live data";
         loading.detail(`Fetching ${new URL(event.url).host}…`);
         loading.indeterminate();
-      } else applyEvent(doc, event, touched);
+      } else {
+        rendering();
+        applyEvent(doc, event, touched);
+      }
       written += (event.html ?? "").length;
       // No token count to divide by, so progress is measured against the cap the model
       // was given -- roughly right, and always moving forwards.
       if (written) loading.progress(Math.min(0.95, written / 1400));
     }
   } catch (e) {
-    applyRegion(doc, "uui-error", errorRegion(e.message));
+    if (e.name !== "AbortError") applyRegion(doc, "uui-error", errorRegion(e.message));
   } finally {
     loading.hide();
   }
+
+  turn = null;
+  busy = false;
+  if (current.abort.signal.aborted) {
+    // Replaced by a newer request, which is waiting on this and takes these keys again.
+    keyLog.returned();
+    finished();
+    return;
+  }
+  keyLog.consumed(keystrokes.length);
   const secs = stopTimer(touched.length ? ` · changed ${touched.join(", ")}` : " · no change");
   journal.add({ label, plan, inputs: action.formValues });
   log.push({ action: label, plan, touched, secs });
   renderTranscript();
-  busy = false;
+  finished();
   speculate(doc);
 }
 
@@ -608,11 +658,14 @@ function attachDelegation(doc) {
     const el = findControl(e.target, doc);
     if (!el) return;
     if (isLocal(el)) {
+      // It submits its form, and the submit is handled below with the same grace. Both
+      // becoming requests would have the second replace the first mid-decision.
+      if (el.type === "submit" && el.form) return;
       // Let the page's own handler run, but never let a real href navigate away.
       if (el.tagName === "A") e.preventDefault();
       const before = doc.body.innerHTML;
       setTimeout(() => {
-        if (busy || doc.body.innerHTML !== before) return;
+        if (doc.body.innerHTML !== before) return;
         sendAction({ event: "click", elementData: describeElement(el), formValues: collectFormState(doc) });
       }, LOCAL_GRACE_MS);
       return;
@@ -635,7 +688,7 @@ function attachDelegation(doc) {
     // otherwise be a search box that silently does nothing, forever.
     if (isLocal(form) || isLocal(e.submitter || form)) {
       const before = doc.body.innerHTML;
-      setTimeout(() => { if (!busy && doc.body.innerHTML === before) send(); }, LOCAL_GRACE_MS);
+      setTimeout(() => { if (doc.body.innerHTML === before) send(); }, LOCAL_GRACE_MS);
       return;
     }
     e.stopImmediatePropagation();
@@ -652,8 +705,34 @@ function attachDelegation(doc) {
     if (!submitsOnEnter(field) || field.form) return;
     const before = doc.body.innerHTML;
     setTimeout(() => {
-      if (busy || doc.body.innerHTML !== before) return;
+      if (doc.body.innerHTML !== before) return;
       sendAction({ event: "submit", elementData: describeElement(field), formValues: collectFormState(doc) });
+    }, LOCAL_GRACE_MS);
+  }, true);
+
+  // Every key pressed in a field, and where -- see KeyLog. Registered on the document
+  // rather than the fields, since the fields are replaced every time a region is.
+  doc.addEventListener("keydown", (e) => {
+    const field = e.target;
+    if (e.isComposing || !field.matches?.(FIELDS)) return;
+    const symbol = keySymbol(e, field);
+    if (symbol) keyLog.key(field, symbol);
+  }, true);
+  doc.addEventListener("paste", (e) => {
+    const field = e.target.closest?.(FIELDS);
+    if (field) keyLog.paste(field, e.clipboardData?.getData("text") ?? "");
+  }, true);
+
+  // A dropdown or a toggle with no button beside it is the request itself: a filter
+  // that only works if the page happened to script it was a filter that did nothing.
+  // Same grace as a click, so one the page does handle costs nothing.
+  doc.addEventListener("change", (e) => {
+    const field = e.target;
+    if (!field.matches?.(FIELDS) || !changeIsRequest(field)) return;
+    const before = doc.body.innerHTML;
+    setTimeout(() => {
+      if (doc.body.innerHTML !== before) return;
+      sendAction({ event: "change", elementData: describeElement(field), formValues: collectFormState(doc) });
     }, LOCAL_GRACE_MS);
   }, true);
 

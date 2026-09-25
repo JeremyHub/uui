@@ -23,6 +23,9 @@ from tests.browser import Watcher, click_text, set_prediction
 from tests import browser as browser_helpers
 from tests.fake_ollama import FakeOllama
 
+# The app's wait for a page's own handler before treating a key or click as a request.
+LOCAL_GRACE_MS = 400
+
 ROOT = Path(__file__).resolve().parent.parent
 
 # Chosen at runtime: a fixed port silently hands the whole suite to whatever dev server
@@ -497,6 +500,137 @@ async def test_enter_the_page_handles_itself_costs_nothing(fake, page):
     assert result["calls"] == 0, "the page answered Enter itself, and a turn was taken anyway"
 
 
+# --- what the user pressed ----------------------------------------------------
+
+def last_action(fake):
+    prompt = [p for p in prompts_sent(fake) if "USER ACTION" in p][-1]
+    return json.loads(section(prompt, "USER ACTION"))
+
+
+@pytest.mark.asyncio
+async def test_every_key_pressed_reaches_the_model_with_where_it_was_pressed(fake, page):
+    # A field's value says where the user ended up, not how they got there. The keys are
+    # the rest of it, and which box they went into.
+    scripted(fake, shell=SEARCH_SHELL)
+    watcher = Watcher(page)
+    await start_app(page, watcher)
+    box = page.frames[1].locator('input[placeholder="Search the web"]')
+    await box.press_sequentially("cst")
+    await box.press("Backspace")
+    await box.press("Backspace")
+    await box.press_sequentially("at")
+    await watcher.turns_taken(lambda: box.press("Enter"), quiet=1.0)
+
+    assert last_action(fake)["keystrokes"] == [
+        {"in": "Search the web", "region": "search", "keys": "cst⌫⌫at⏎"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_keys_the_model_has_seen_are_not_sent_again(fake, page):
+    scripted(fake, shell=SEARCH_SHELL)
+    watcher = Watcher(page)
+    await start_app(page, watcher)
+    box = page.frames[1].locator('input[placeholder="Search the web"]')
+    await box.press_sequentially("cats")
+    await watcher.turns_taken(lambda: box.press("Enter"), quiet=1.0)
+    await watcher.turns_taken(lambda: click_text(page, "Search"))
+    assert "keystrokes" not in last_action(fake), "the model was sent the same keys twice"
+
+
+@pytest.mark.asyncio
+async def test_the_model_can_decide_nothing_changes(fake, page):
+    # Asked on Enter, the model may well conclude the user is not done. That has to be a
+    # cheap, invisible outcome: one call, no retry, no overlay, the page left alone.
+    scripted(fake, shell=SEARCH_SHELL, patch="#plan they are still typing, nothing to show yet\n#none")
+    fake.chunk_delay = 0.06
+    watcher = Watcher(page)
+    await start_app(page, watcher)
+    before = await watcher.html()
+    box = page.frames[1].locator('input[placeholder="Search the web"]')
+    await box.press_sequentially("ca")
+
+    calls_before = watcher.started
+    await box.press("Enter")
+    covered = False
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        covered = covered or await overlay_visible(page)
+        if watcher.started > calls_before and watcher.in_flight == 0:
+            break
+        await page.wait_for_timeout(20)
+    await watcher.settle(quiet=0.8)
+    fake.chunk_delay = 0.004
+
+    assert watcher.started - calls_before == 1, "a deliberate no-change was retried"
+    assert not covered, "the page was covered for a turn that changed nothing"
+    assert await watcher.html() == before
+
+
+FILTER_SHELL = """<section data-region="filters">
+  <select><option>All recipes</option><option>Vegan</option></select>
+  <label><input type="checkbox"> Quick only</label>
+</section>
+<section data-region="recipes"><p>every recipe</p></section>"""
+
+
+@pytest.mark.asyncio
+async def test_a_dropdown_on_its_own_is_a_request(fake, page):
+    # A filter with no button beside it only worked if the page happened to script it.
+    scripted(fake, shell=FILTER_SHELL)
+    watcher = Watcher(page)
+    await start_app(page, watcher)
+    frame = page.frames[1]
+    result = await watcher.turns_taken(lambda: frame.select_option("select", "Vegan"), quiet=1.0)
+    assert result["calls"] == 1, "choosing a filter never reached the model"
+    action = last_action(fake)
+    assert action["event"] == "change"
+    assert action["elementData"]["value"] == "Vegan"
+
+    result = await watcher.turns_taken(lambda: frame.check('input[type="checkbox"]'), quiet=1.0)
+    assert result["calls"] == 1, "ticking a toggle never reached the model"
+
+
+@pytest.mark.asyncio
+async def test_options_beside_a_button_wait_for_the_button(fake, page):
+    # Ticking "safe search" next to a Search button is setting up the search. A turn per
+    # box ticked would keep the model busy exactly while the user is getting ready.
+    scripted(fake, shell=SEARCH_SHELL)
+    watcher = Watcher(page)
+    await start_app(page, watcher)
+    frame = page.frames[1]
+    result = await watcher.turns_taken(lambda: frame.check('input[type="checkbox"]'), quiet=1.0)
+    assert result["calls"] == 0
+    result = await watcher.turns_taken(lambda: frame.select_option("select", "Past week"), quiet=1.0)
+    assert result["calls"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_newer_request_replaces_one_still_being_decided(fake, page):
+    # With no overlay while the model decides, the page stays usable, so the user can
+    # ask for something else before the first answer starts. The newer request wins, and
+    # it carries the keys the abandoned one had taken.
+    scripted(fake, shell=SEARCH_SHELL,
+             patch=lambda text: "#plan " + "deliberating " * 12 + "\n#region results\n"
+             + f"<p>answered {'click' if chr(34) + 'click' + chr(34) in text else 'enter'}</p>\n#end")
+    fake.chunk_delay = 0.05
+    watcher = Watcher(page)
+    await start_app(page, watcher)
+    box = page.frames[1].locator('input[placeholder="Search the web"]')
+    await box.press_sequentially("dogs")
+    await box.press("Enter")
+    await page.wait_for_timeout(LOCAL_GRACE_MS + 200)
+    await click_text(page, "Search")
+    await watcher.settle(quiet=1.0)
+    fake.chunk_delay = 0.004
+
+    assert "answered click" in await watcher.text()
+    assert "answered enter" not in await watcher.text()
+    action = last_action(fake)
+    assert action["event"] == "click"
+    assert action["keystrokes"][0]["keys"] == "dogs⏎", "the abandoned request's keys were lost"
+
+
 @pytest.mark.asyncio
 async def test_a_page_that_navigates_away_takes_a_turn_instead(fake, page):
     # A generated search page will send itself to a real search engine. In the iframe
@@ -532,9 +666,11 @@ async def test_a_password_is_never_sent_to_the_model(fake, page):
     scripted(fake, shell=shell)
     watcher = Watcher(page)
     await start_app(page, watcher)
-    await page.frames[1].fill('input[type="password"]', "hunter2")
+    # Typed key by key, since every key pressed goes to the model too.
+    await page.frames[1].locator('input[type="password"]').press_sequentially("hunter2")
+    await page.frames[1].locator('input[type="password"]').press("Control+v")
     await watcher.turns_taken(lambda: click_text(page, "Search"))
-    assert not any("hunter2" in p for p in prompts_sent(fake))
+    assert not any(re.search(r"h.?u.?n.?t.?e.?r", p) for p in prompts_sent(fake))
 
 
 @pytest.mark.asyncio

@@ -231,7 +231,7 @@ export async function* runPatch({
     for await (const event of patchOnce({
       engine, user: message, doc, action, signal, request,
     })) {
-      produced.any = produced.any || event.type === "region" || event.type === "screen";
+      produced.any = produced.any || ["region", "screen", "none"].includes(event.type);
       yield event;
     }
   };
@@ -248,9 +248,10 @@ export async function* runPatch({
   }
 
   if (!produced.any && !signal?.aborted) {
-    // The model announced a plan and then wrote nothing under it, so the click did
-    // nothing at all -- the worst outcome available, since the user cannot tell a broken
-    // control from a slow one. Nothing has been applied yet, so there is nothing to undo,
+    // The model announced a plan and then wrote nothing under it -- not even #none, which
+    // is how it says nothing should change -- so the click did nothing at all. That is
+    // the worst outcome available, since the user cannot tell a broken control from a
+    // slow one. Nothing has been applied yet, so there is nothing to undo,
     // and the failure is fast precisely because it generated almost no tokens.
     yield* run(user + RETRY_NUDGE, {});
   }

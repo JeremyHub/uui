@@ -356,6 +356,101 @@ export function submitsOnEnter(el) {
   return el.tagName === "INPUT" && !NOT_INPUT.test(el.type) && !/^(checkbox|radio|range|color)$/.test(el.type);
 }
 
+// --- what the user pressed, and where ----------------------------------------------
+//
+// A field's value says where the user ended up, not how they got there: that they typed
+// "chiken", went back and fixed it, then pressed Enter; that they tabbed out of the name
+// box into the search box. So every key pressed in a field is kept, in order, against the
+// field it was pressed in, and goes to the model with the next turn. What the model does
+// with it is its call -- including deciding that nothing on screen needs to change.
+//
+// Kept as one string of keys per stretch of typing in one field, because a JSON object
+// per key press would be the biggest thing in the prompt.
+
+const KEY_SYMBOLS = {
+  Backspace: "⌫", Delete: "⌦", Enter: "⏎", Tab: "⇥", Escape: "⎋",
+  ArrowLeft: "←", ArrowRight: "→", ArrowUp: "↑", ArrowDown: "↓",
+};
+const MAX_KEYS = 240;
+const MAX_STRETCHES = 12;
+
+/** How one key press is written down, or null for one that says nothing on its own. */
+export function keySymbol(e, field) {
+  // Pasting is recorded from the paste itself, which carries the text; the keys don't.
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "v") return null;
+  if (e.ctrlKey || e.metaKey) return e.key.length === 1 ? `⌃${e.key.toLowerCase()}` : null;
+  if (e.key.length === 1) return field.type === "password" ? "•" : e.key;
+  return KEY_SYMBOLS[e.key] ?? null;
+}
+
+export class KeyLog {
+  constructor() {
+    this.stretches = [];   // { in, region, keys } oldest first
+    this.field = null;     // the field the last stretch belongs to
+    this.sent = 0;         // how many stretches the turn in flight has taken
+  }
+
+  #stretch(field) {
+    const last = this.stretches.at(-1);
+    // A turn took the last stretch, so later keys start a new one even in the same field:
+    // they are what happened after the model was asked.
+    if (last && this.field === field && this.stretches.length > this.sent) return last;
+    const region = field.closest("[data-region]")?.getAttribute("data-region");
+    const stretch = { in: fieldKey(field), ...(region ? { region } : {}), keys: "" };
+    this.stretches.push(stretch);
+    this.field = field;
+    if (this.stretches.length > MAX_STRETCHES) {
+      this.stretches.shift();
+      this.sent = Math.max(0, this.sent - 1);
+    }
+    return stretch;
+  }
+
+  key(field, symbol) {
+    const stretch = this.#stretch(field);
+    stretch.keys += symbol;
+    if (stretch.keys.length > MAX_KEYS) stretch.keys = "…" + stretch.keys.slice(-MAX_KEYS);
+  }
+
+  paste(field, text) {
+    this.key(field, field.type === "password" ? "«pasted»" : `«pasted ${JSON.stringify(text.slice(0, 80))}»`);
+  }
+
+  /** Everything since the last turn that went through, for the turn about to be sent. */
+  take() {
+    this.sent = this.stretches.length;
+    return this.stretches.map((s) => ({ ...s }));
+  }
+
+  /** The turn that took them finished, so the model has seen them. */
+  consumed(count) {
+    this.stretches.splice(0, count);
+    this.sent = Math.max(0, this.sent - count);
+    if (!this.stretches.length) this.field = null;
+  }
+
+  /** The turn that took them was abandoned; the next one takes them again. */
+  returned() {
+    this.sent = 0;
+  }
+}
+
+/**
+ * Whether changing this field is itself a request: a filter dropdown, a toggle. Not when
+ * the field is one part of something with its own go button -- ticking "safe search"
+ * next to a Search button is setting up the search, not running it, and asking the model
+ * then would spend a turn on every box ticked.
+ */
+export function changeIsRequest(field) {
+  if (field.form) return false;
+  if (field.tagName === "INPUT" && !/^(checkbox|radio|range|color|date|time|datetime-local|month|week)$/.test(field.type)) {
+    return false;
+  }
+  if (field.tagName === "TEXTAREA") return false;
+  const scope = field.closest("[data-region]") ?? field.ownerDocument.body;
+  return !scope.querySelector('button, input[type="submit"], input[type="button"], [role="button"]');
+}
+
 // --- applying model output --------------------------------------------------
 
 // innerHTML never runs <script>, so scripts in a freshly patched region are re-created
