@@ -463,6 +463,69 @@ async def test_everything_the_user_did_to_the_page_reaches_the_model(fake, page)
 
 
 @pytest.mark.asyncio
+async def test_enter_in_a_search_box_with_no_form_searches(fake, page):
+    # Pressing Enter in a field only submits when there is a <form> around it, and a
+    # generated search page usually has none -- so Enter did nothing, and a search box
+    # that ignores Enter reads as broken.
+    scripted(fake, shell=SEARCH_SHELL)
+    watcher = Watcher(page)
+    await start_app(page, watcher)
+    box = page.frames[1].locator('input[placeholder="Search the web"]')
+    await box.fill("cat blogs")
+    result = await watcher.turns_taken(lambda: box.press("Enter"), quiet=1.0)
+
+    assert result["calls"] == 1, "Enter in the search box never reached the model"
+    action = json.loads(section(prompts_sent(fake)[-1], "USER ACTION"))
+    assert action["event"] == "submit"
+    assert action["formValues"]["Search the web"] == "cat blogs"
+    assert action["elementData"]["label"] == "Search the web", "the model was not told which box"
+
+
+@pytest.mark.asyncio
+async def test_enter_the_page_handles_itself_costs_nothing(fake, page):
+    shell = SEARCH_SHELL + """<script>
+      document.querySelector('input.field').addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') document.querySelector('[data-region=results]').innerHTML = '<p>local</p>';
+      });
+    </script>"""
+    scripted(fake, shell=shell)
+    watcher = Watcher(page)
+    await start_app(page, watcher)
+    box = page.frames[1].locator("input.field")
+    await box.fill("cats")
+    result = await watcher.turns_taken(lambda: box.press("Enter"), quiet=1.0)
+    assert result["calls"] == 0, "the page answered Enter itself, and a turn was taken anyway"
+
+
+@pytest.mark.asyncio
+async def test_a_page_that_navigates_away_takes_a_turn_instead(fake, page):
+    # A generated search page will send itself to a real search engine. In the iframe
+    # that is a blank screen -- most sites refuse to be framed -- and the app has lost
+    # the page it was building. The navigation is what the user asked for, so ask the
+    # model for it instead.
+    shell = SEARCH_SHELL + """<script>
+      document.querySelector('button').addEventListener('click', () => {
+        location.href = 'https://www.google.com/search?q=' + encodeURIComponent(document.querySelector('input.field').value);
+      });
+    </script>"""
+    shell = shell.replace('<button class="btn primary">', '<button class="btn primary" data-local>')
+    scripted(fake, shell=shell)
+    watcher = Watcher(page)
+    await start_app(page, watcher)
+    await page.frames[1].fill("input.field", "cat blogs")
+    await watcher.turns_taken(lambda: click_text(page, "Search"), quiet=1.0)
+
+    assert "patched results" in await watcher.text(), "the page navigated away and was lost"
+    action = json.loads(section(prompt_with(fake, "USER ACTION"), "USER ACTION"))
+    assert action["event"] == "navigate"
+    assert action["elementData"]["href"].startswith("https://www.google.com/search?q=cat")
+
+
+def prompt_with(fake, needle):
+    return [p for p in prompts_sent(fake) if needle in p][-1]
+
+
+@pytest.mark.asyncio
 async def test_a_password_is_never_sent_to_the_model(fake, page):
     shell = SEARCH_SHELL.replace('<textarea placeholder="Notes"></textarea>',
                                  '<input type="password" placeholder="Password">')

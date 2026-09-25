@@ -344,8 +344,16 @@ export function describeElement(el) {
     href: el.tagName === "A" ? el.getAttribute("href") : undefined,
     type: el.type || undefined,
     inRegion: region ? region.getAttribute("data-region") : undefined,
+    // A field has no text of its own, so without these a submit from a bare search box
+    // tells the model only that "an input" was submitted.
+    ...(el.matches(FIELDS) ? { label: fieldKey(el), value: fieldValue(el) } : {}),
     ...(Object.keys(data).length ? { data } : {}),
   };
+}
+
+/** Whether Enter in this element means "go": a one-line field. */
+export function submitsOnEnter(el) {
+  return el.tagName === "INPUT" && !NOT_INPUT.test(el.type) && !/^(checkbox|radio|range|color)$/.test(el.type);
 }
 
 // --- applying model output --------------------------------------------------

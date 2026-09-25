@@ -6,7 +6,7 @@
 import {
   LOCAL_GRACE_MS, allControls, appendToRegion, applyRegion, applyScreen, collectFormState,
   describeElement, ensureRegions, errorRegion, findControl, isClickable, isLocal,
-  openRegion, repairImages, runScripts, splitOversizedRegions,
+  openRegion, repairImages, runScripts, splitOversizedRegions, submitsOnEnter,
 } from "./dom.js";
 import { Journal } from "./journal.js";
 import { SHELL_MAX_TOKENS, runPatch, runShell } from "./turn.js";
@@ -21,6 +21,19 @@ const hostEl = document.getElementById("engine");
 const modelEl = document.getElementById("model");
 
 const delegated = new WeakSet();   // documents whose click/submit delegation is live
+
+// The iframe starts on about:blank, and Chrome switches the Navigation API off for that
+// first document, so nothing a generated page does to navigate could be intercepted.
+// A blank page of the app's own, loaded first, is an ordinary document -- and stays one
+// after document.open() -- so the frame starts from that instead.
+const frameReady = new Promise((resolve) => {
+  appEl.addEventListener("load", function loaded() {
+    if (appEl.contentWindow.location.protocol !== "blob:") return;
+    appEl.removeEventListener("load", loaded);
+    resolve();
+  });
+  appEl.src = URL.createObjectURL(new Blob(["<!DOCTYPE html><title></title>"], { type: "text/html" }));
+});
 let concept = "";
 const journal = new Journal();     // what the session has established, compacted as it grows
 const log = [];                    // debug transcript
@@ -452,6 +465,7 @@ async function startFromConcept() {
   try {
     await engineChosen;
     await modelsReady;
+    await frameReady;
     await ensureEngineReady();
   } catch (e) {
     loading.hide();
@@ -559,6 +573,23 @@ function attachDelegation(doc) {
     send();
   }, true);
 
+  // Enter only submits a field inside a <form>, and generated search pages rarely have
+  // one -- so typing a query and pressing Enter did nothing at all. Treated like a
+  // data-local click: if the page's own script answers it, fine; if nothing changes,
+  // it was a request, and it becomes a turn.
+  doc.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" || e.isComposing || e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
+    const field = e.target;
+    if (!submitsOnEnter(field) || field.form) return;
+    const before = doc.body.innerHTML;
+    setTimeout(() => {
+      if (busy || doc.body.innerHTML !== before) return;
+      sendAction({ event: "submit", elementData: describeElement(field), formValues: collectFormState(doc) });
+    }, LOCAL_GRACE_MS);
+  }, true);
+
+  guardNavigation(doc.defaultView);
+
   doc.addEventListener("mousemove", (e) => {
     const el = findControl(e.target, doc);
     if (el) predictOnHover(doc, el);
@@ -567,6 +598,27 @@ function attachDelegation(doc) {
   // Typing invalidates any prediction keyed on the old form values, and the user is
   // clearly mid-thought, so stop burning the GPU on guesses until they settle.
   doc.addEventListener("input", () => { cancelSpeculation(); predictions.clear(); }, true);
+}
+
+// A generated page will navigate itself -- location.href to a real search engine, a form
+// with an action, window.open's cousin. In the iframe that replaces the app with a
+// blank screen (most sites refuse to be framed), and the page being built is lost. What
+// the page was trying to show is exactly what the model is for, so the navigation is
+// cancelled and becomes a turn. Moving within the page (#anchors) is left alone.
+function interceptNavigation(e) {
+  if (e.destination.sameDocument || !e.cancelable) return;
+  e.preventDefault();
+  sendAction({
+    event: "navigate",
+    elementData: { tag: "navigation", text: "", href: e.destination.url },
+    formValues: collectFormState(appEl.contentDocument),
+  });
+}
+
+function guardNavigation(win) {
+  // Re-added on every document.open(), and removed first so it is only ever on once.
+  win?.navigation?.removeEventListener("navigate", interceptNavigation);
+  win?.navigation?.addEventListener("navigate", interceptNavigation);
 }
 
 // Fallback for any document this page did not open itself.
