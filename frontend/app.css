@@ -143,6 +143,15 @@ body:not(.at-home) #home { display: none; }
 #start-btn span { display: inline-block; transition: transform .2s; }
 #start-btn:hover span { transform: translateX(3px); }
 
+.chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin: 18px 0 0; }
+.chips button {
+  font-size: 13px; padding: 6px 12px; cursor: pointer; color: var(--muted);
+  background: rgba(255, 255, 255, .03); border: 1px solid var(--line); border-radius: 999px;
+  transition: color .15s, border-color .15s, background .15s;
+}
+.chips button:hover { color: var(--text); border-color: rgba(124, 92, 255, .5);
+  background: rgba(124, 92, 255, .1); }
+
 .about-link {
   display: inline-block; margin: 22px 0 0; padding: 8px 16px; cursor: pointer;
   font-size: 14px; color: var(--muted); background: rgba(255, 255, 255, .03);

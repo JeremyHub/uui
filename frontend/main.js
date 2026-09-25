@@ -806,6 +806,13 @@ document.getElementById("home-btn").addEventListener("click", () => {
   else location.reload();
 });
 
+document.getElementById("examples").addEventListener("click", (e) => {
+  const chip = e.target.closest("[data-concept]");
+  if (!chip) return;
+  document.getElementById("concept").value = chip.dataset.concept;
+  startFromConcept();
+});
+
 // The about page is a panel over whatever is showing, so opening it mid-session loses
 // nothing. #about in the address makes it linkable.
 const aboutEl = document.getElementById("about");
