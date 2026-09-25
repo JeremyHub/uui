@@ -63,6 +63,7 @@ a { color: var(--accent-2); }
   display: flex; align-items: center; gap: 9px; padding: 0 14px; margin-left: 8px;
   background: rgba(255, 255, 255, .05); border: 1px solid var(--line); border-radius: 999px;
 }
+.at-home #addressbar { display: none; }
 #addressbar svg { flex: none; color: var(--dim); }
 #address { flex: 1; min-width: 0; font-size: 13px; color: var(--muted); white-space: nowrap;
   overflow: hidden; text-overflow: ellipsis; }
@@ -162,15 +163,6 @@ body:not(.at-home) #home { display: none; }
 .chips button:hover { color: var(--text); border-color: rgba(124, 92, 255, .5);
   background: rgba(124, 92, 255, .1); }
 
-.about-link {
-  display: inline-block; margin: 22px 0 0; padding: 8px 16px; cursor: pointer;
-  font-size: 14px; color: var(--muted); background: rgba(255, 255, 255, .03);
-  border: 1px solid var(--line); border-radius: 999px;
-  transition: color .15s, border-color .15s, background .15s;
-}
-.about-link strong { color: var(--text); font-weight: 600; margin-left: 4px; }
-.about-link:hover { color: var(--text); border-color: rgba(124, 92, 255, .5);
-  background: rgba(124, 92, 255, .1); }
 
 #options {
   display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: center; gap: 14px 18px;
@@ -286,6 +278,11 @@ details summary:hover { color: var(--text); }
 #about h1 { margin: 0 0 12px; font-size: 44px; letter-spacing: -.03em; }
 #about .lede { margin: 0 0 32px; max-width: none; }
 .close { position: absolute; top: 0; right: 0; font-size: 14px; padding: 6px 10px; }
+
+.disclaimer { margin: -8px 0 28px; padding: 14px 16px; font-size: 14px; line-height: 1.55;
+  color: #fcd9a0; background: rgba(245, 158, 11, .08); border: 1px solid rgba(245, 158, 11, .3);
+  border-radius: 12px; }
+.disclaimer strong { color: #fde6bf; }
 
 .steps { counter-reset: step; list-style: none; padding: 0; margin: 0 0 28px;
   display: grid; gap: 10px; }

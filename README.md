@@ -6,6 +6,11 @@ by the model.
 
 Heavily inspired by [Steve Sanderson's Vibe OS](https://www.youtube.com/watch?v=zh6fMtL_cSM)
 
+> **Just for fun.** UUI is a toy and an experiment, not a serious product. Every page,
+> fact, price and web address in it is made up on the spot by a language model, and it
+> will get things wrong. Nothing you search, book or buy in it is real, so don't rely on
+> it for anything that matters.
+
 ## How it works
 
 1. **Describe an app.** The model writes the first screen, which streams into the page
