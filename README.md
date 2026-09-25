@@ -48,6 +48,16 @@ With no server, in-browser over WebGPU:
 python3 -m http.server --directory frontend 8080   # then open http://localhost:8080/
 ```
 
+The frontend is TypeScript in `frontend/src/`, compiled into `frontend/` so that the
+directory can be served as-is. The compiled files are committed; after changing the
+sources, rebuild them:
+
+```
+npm install        # only needed once
+npm run build      # frontend/src/*.ts -> frontend/*.js
+npm run check      # type check and lint
+```
+
 Run the tests (no GPU or network needed):
 
 ```

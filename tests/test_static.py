@@ -115,7 +115,8 @@ async def test_webgpu_on_the_cpu_is_called_out(static_site):
 
 @pytest.mark.asyncio
 async def test_the_static_app_loads_without_the_backend_it_no_longer_needs(static_site):
-    # Every module has to resolve over plain static hosting -- no build step, no bundler,
-    # no endpoint that only exists when the Python server is running.
+    # Every module has to resolve over plain static hosting -- no build step for whoever
+    # serves it (tsc's output is committed), no bundler, no endpoint that only exists when
+    # the Python server is running.
     state = await open_site(static_site, GPU_ARGS)
     assert not state["errors"], state["errors"]

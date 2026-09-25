@@ -1,0 +1,26 @@
+{
+  // The sources are frontend/src/*.ts; the browser loads what tsc writes next to
+  // index.html. That output is committed, so a static copy of frontend/ is still a
+  // working app with no build step for whoever serves it.
+  "compilerOptions": {
+    "rootDir": "frontend/src",
+    "outDir": "frontend",
+    "target": "ES2023",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["@webgpu/types"],
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true,
+    "newLine": "lf"
+  },
+  "include": ["frontend/src"],
+  // Set, so tsc stops excluding outDir -- which src/ sits inside -- by default.
+  "exclude": ["node_modules"]
+}

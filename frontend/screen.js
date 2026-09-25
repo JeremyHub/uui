@@ -11,15 +11,12 @@
 //
 // This walks the real DOM. The server-side version parsed HTML text with a hand-written
 // parser to do the same job, which is most of what made it long.
-
 import { maskSecret } from "./dom.js";
-
 const VOID = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input",
-                      "link", "meta", "param", "source", "track", "wbr"]);
+    "link", "meta", "param", "source", "track", "wbr"]);
 // Attributes that tell the model something about how to write matching markup.
 const KEEP_ATTRS = new Set(["class", "id", "href", "src", "alt", "type", "name", "value",
-                            "placeholder", "checked", "selected", "disabled", "role", "colspan"]);
-
+    "placeholder", "checked", "selected", "disabled", "role", "colspan"]);
 const MAX_TEXT = 200;
 const MAX_SCRIPT = 400;
 const MAX_STYLE_BLOCK = 1600;
@@ -28,121 +25,118 @@ const MAX_STYLE_BLOCK = 1600;
 // back into their answer, so every elision is a chance to corrupt the output.
 const MIN_RUN = 6;
 const DEFAULT_KEEP = 4;
-
-export const elision = (n, tag) =>
-  `<!-- and ${n} more <${tag}> like those above: WRITE THEM ALL OUT IN FULL -->`;
-
+export const elision = (n, tag) => `<!-- and ${n} more <${tag}> like those above: WRITE THEM ALL OUT IN FULL -->`;
 // Matches anything shaped like an elision marker, ours or a mangled copy of one, so the
 // app can guarantee no marker ever reaches the page.
 export const ELISION_RE = /<!--(?:(?!-->)[\s\S])*?\bmore\b(?:(?!-->)[\s\S])*?-->/gi;
-
 const signature = (el) => `${el.tagName.toLowerCase()}.${el.getAttribute("class") || ""}`;
-
 function truncate(text, limit) {
-  return text.length <= limit ? text : text.slice(0, limit) + "…";
+    return text.length <= limit ? text : text.slice(0, limit) + "…";
 }
-
 const attr = (value) => String(value).replace(/&/g, "&amp;").replace(/"/g, "&quot;");
-
 // What the user has done to a control lives in its properties, not its attributes:
 // typing into <input value=""> leaves the markup saying value="", and ticking a box
 // leaves it unticked. The screen is what the model reads the page from, so it shows the
 // page as it is now -- these replace the attributes they shadow.
 function liveState(node) {
-  const tag = node.tagName;
-  if (tag === "INPUT") {
-    if (node.type === "checkbox" || node.type === "radio") return { checked: node.checked };
-    if (/^(submit|button|reset|image|file)$/.test(node.type)) return null;
-    return { value: node.type === "password" ? maskSecret(node.value) : node.value };
-  }
-  if (tag === "OPTION") return { selected: node.selected };
-  return null;
-}
-
-function serialize(node, out, keep, root) {
-  if (node.nodeType === Node.TEXT_NODE) {
-    const text = node.textContent.replace(/\s+/g, " ").trim();
-    if (text) out.push(truncate(text, MAX_TEXT));
-    return;
-  }
-  if (node.nodeType !== Node.ELEMENT_NODE) return;
-
-  // A region nested inside another is sent separately, so repeating it here would put
-  // the same content in the prompt twice and invite a patch that clobbers the child.
-  if (node !== root && node.hasAttribute("data-region")) {
-    out.push(`<!-- region ${node.getAttribute("data-region")}, sent separately -->`);
-    return;
-  }
-
-  const tag = node.tagName.toLowerCase();
-  const live = liveState(node);
-  let attrs = "";
-  for (const { name, value } of node.attributes) {
-    if (live && name in live) continue;
-    if (KEEP_ATTRS.has(name) || name.startsWith("data-") || name.startsWith("aria-")) {
-      attrs += value ? ` ${name}="${value}"` : ` ${name}`;
+    const tag = node.tagName;
+    // Checked by tag rather than instanceof: these nodes come from the iframe's window,
+    // whose HTMLInputElement is not this one.
+    if (tag === "INPUT") {
+        const input = node;
+        if (input.type === "checkbox" || input.type === "radio")
+            return { checked: input.checked };
+        if (/^(submit|button|reset|image|file)$/.test(input.type))
+            return null;
+        return { value: input.type === "password" ? maskSecret(input.value) : input.value };
     }
-  }
-  for (const [name, value] of Object.entries(live ?? {})) {
-    if (value === true) attrs += ` ${name}`;
-    else if (value) attrs += ` ${name}="${attr(truncate(value, MAX_TEXT))}"`;
-  }
-  out.push(`<${tag}${attrs}>`);
-  if (VOID.has(tag)) return;
-
-  if (tag === "textarea") {
-    out.push(truncate(node.value, MAX_TEXT), "</textarea>");
-    return;
-  }
-
-  if (tag === "script" || tag === "style") {
-    out.push(truncate(node.textContent, tag === "script" ? MAX_SCRIPT : MAX_STYLE_BLOCK));
-    out.push(`</${tag}>`);
-    return;
-  }
-  serializeChildren(node.childNodes, out, keep, root);
-  out.push(`</${tag}>`);
+    if (tag === "OPTION")
+        return { selected: node.selected };
+    return null;
 }
-
+function serialize(node, out, keep, root) {
+    if (node.nodeType === Node.TEXT_NODE) {
+        const text = (node.textContent ?? "").replace(/\s+/g, " ").trim();
+        if (text)
+            out.push(truncate(text, MAX_TEXT));
+        return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE)
+        return;
+    const el = node;
+    // A region nested inside another is sent separately, so repeating it here would put
+    // the same content in the prompt twice and invite a patch that clobbers the child.
+    if (el !== root && el.hasAttribute("data-region")) {
+        out.push(`<!-- region ${el.getAttribute("data-region")}, sent separately -->`);
+        return;
+    }
+    const tag = el.tagName.toLowerCase();
+    const live = liveState(el);
+    let attrs = "";
+    for (const { name, value } of el.attributes) {
+        if (live && name in live)
+            continue;
+        if (KEEP_ATTRS.has(name) || name.startsWith("data-") || name.startsWith("aria-")) {
+            attrs += value ? ` ${name}="${value}"` : ` ${name}`;
+        }
+    }
+    for (const [name, value] of Object.entries(live ?? {})) {
+        if (value === true)
+            attrs += ` ${name}`;
+        else if (value)
+            attrs += ` ${name}="${attr(truncate(value, MAX_TEXT))}"`;
+    }
+    out.push(`<${tag}${attrs}>`);
+    if (VOID.has(tag))
+        return;
+    if (tag === "textarea") {
+        out.push(truncate(el.value, MAX_TEXT), "</textarea>");
+        return;
+    }
+    if (tag === "script" || tag === "style") {
+        out.push(truncate(el.textContent ?? "", tag === "script" ? MAX_SCRIPT : MAX_STYLE_BLOCK));
+        out.push(`</${tag}>`);
+        return;
+    }
+    serializeChildren(el.childNodes, out, keep, root);
+    out.push(`</${tag}>`);
+}
 // Collapse runs of same-kind siblings: the first few show the pattern, a count stands in
 // for the rest so the model still knows how much content is really there.
 function serializeChildren(nodes, out, keep, root) {
-  let runSig = null, runN = 0;
-
-  const flushRun = () => {
-    if (runSig !== null && runN >= MIN_RUN && runN > keep) {
-      out.push(elision(runN - keep, runSig.split(".")[0]));
+    let runSig = null, runN = 0;
+    const flushRun = () => {
+        if (runSig !== null && runN >= MIN_RUN && runN > keep) {
+            out.push(elision(runN - keep, runSig.split(".")[0]));
+        }
+    };
+    for (const child of nodes) {
+        if (child.nodeType === Node.ELEMENT_NODE) {
+            const sig = signature(child);
+            if (sig === runSig) {
+                runN += 1;
+                if (runN > keep)
+                    continue;
+            }
+            else {
+                flushRun();
+                runSig = sig;
+                runN = 1;
+            }
+        }
+        serialize(child, out, keep, root);
     }
-  };
-
-  for (const child of nodes) {
-    if (child.nodeType === Node.ELEMENT_NODE) {
-      const sig = signature(child);
-      if (sig === runSig) {
-        runN += 1;
-        if (runN > keep) continue;
-      } else {
-        flushRun();
-        runSig = sig;
-        runN = 1;
-      }
-    }
-    serialize(child, out, keep, root);
-  }
-  flushRun();
+    flushRun();
 }
-
 export function compact(el, keep = DEFAULT_KEEP) {
-  const out = [];
-  serializeChildren(el.childNodes, out, keep, el);
-  return out.join("");
+    const out = [];
+    serializeChildren(el.childNodes, out, keep, el);
+    return out.join("");
 }
-
 /** The regions on screen, outermost first, as the model will be asked to address them. */
 export function regionsOf(doc) {
-  return [...doc.querySelectorAll("[data-region]")];
+    return [...doc.querySelectorAll("[data-region]")];
 }
-
 /**
  * Render the addressable screen for the prompt, inside a character budget.
  *
@@ -151,22 +145,22 @@ export function regionsOf(doc) {
  * costs it the structure it was about to imitate.
  */
 export function renderScreen(doc, budget = 7000) {
-  const themeStyles = [...doc.querySelectorAll("style:not([data-uui-base])")]
-    .map((el) => el.textContent).join("\n").trim();
-
-  const build = (keep) => {
-    const parts = [];
-    if (themeStyles) parts.push(`<style>\n${truncate(themeStyles, MAX_STYLE_BLOCK)}\n</style>`);
-    for (const region of regionsOf(doc)) {
-      const id = region.getAttribute("data-region");
-      parts.push(`<section data-region="${id}">\n${compact(region, keep)}\n</section>`);
+    const themeStyles = [...doc.querySelectorAll("style:not([data-uui-base])")]
+        .map((el) => el.textContent).join("\n").trim();
+    const build = (keep) => {
+        const parts = [];
+        if (themeStyles)
+            parts.push(`<style>\n${truncate(themeStyles, MAX_STYLE_BLOCK)}\n</style>`);
+        for (const region of regionsOf(doc)) {
+            const id = region.getAttribute("data-region");
+            parts.push(`<section data-region="${id}">\n${compact(region, keep)}\n</section>`);
+        }
+        return parts.join("\n");
+    };
+    for (const keep of [DEFAULT_KEEP, 2, 1]) {
+        const text = build(keep);
+        if (text.length <= budget)
+            return text;
     }
-    return parts.join("\n");
-  };
-
-  for (const keep of [DEFAULT_KEEP, 2, 1]) {
-    const text = build(keep);
-    if (text.length <= budget) return text;
-  }
-  return build(1).slice(0, budget) + "\n<!-- ...screen truncated -->";
+    return build(1).slice(0, budget) + "\n<!-- ...screen truncated -->";
 }

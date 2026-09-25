@@ -6,7 +6,9 @@
 // Generated pages are rendered by the browser, so the turn protocol lives here rather
 // than on a server: the same code runs whether the model is Ollama on this machine or
 // a model running in this tab. A static copy of this directory is a working app.
+
 import { apiCatalogue } from "./apis.js";
+
 const LIVE_DATA = `
 
 Live data:
@@ -19,6 +21,7 @@ Live data:
 ${apiCatalogue()}
 - Do not ask for data you could just write yourself. A gallery of cat breeds needs no
   network; today's forecast does.`;
+
 // Placed before the interactivity rules rather than after them. A small model weights
 // the end of a prompt most, and appending a ten-line API catalogue there pushed "give
 // this screen the controls it needs" into the middle, where it stopped being followed:
@@ -30,6 +33,7 @@ export const ADDRESS_SYSTEM_PROMPT = `You make up the web address for an app, gi
 
 Reply with ONE address and nothing else: a short, believable domain for this app and the
 path of its first page. No quotes, no commentary.`;
+
 export const SHELL_SYSTEM_PROMPT = `You build the body of a live single-page app.
 
 The page already has a stylesheet, written for exactly this job. Use it. Do not write
@@ -86,6 +90,7 @@ Interactivity:
   on the control itself, never on a whole nav, section or footer.
 - Leave every other control plain; those are handled for you.
 `;
+
 export const PATCH_SYSTEM_PROMPT = `You update a live single-page app by rewriting ONLY the parts that change.
 
 You are given the app concept, the page's ADDRESS, the markup of each region currently on
@@ -141,3 +146,4 @@ Rules:
 
 - No code fences. Nothing outside this format.
 ` + LIVE_DATA;
+

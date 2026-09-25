@@ -3,7 +3,7 @@
 Each call runs `claude -p` with the app's system prompt in place of Claude Code's own,
 no tools, no session saved, and no settings files -- so none of your hooks, plugins or
 MCP servers join in. Its streamed events are translated into the NDJSON Ollama speaks,
-which is all the engine in frontend/engine.js reads from /chat. The engine does not know
+which is all the engine in frontend/src/engine.ts reads from /chat. The engine does not know
 this is not Ollama, and does not need to.
 
 Every call counts against the Claude Code usage limits of whoever is logged in.

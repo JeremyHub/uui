@@ -13,7 +13,7 @@ them to.
 - the protocol lives in `frontend/`, not the backend, so a static copy of that directory
   is a working app. do not move any of it back to Python -- two implementations of the
   same protocol is the thing that arrangement exists to avoid
-- there is one engine (`frontend/engine.js`). the server and the tab are hosts, and a host
+- there is one engine (`frontend/src/engine.ts`). the server and the tab are hosts, and a host
   only lists models and loads one. loops, prompts, streaming, aborts and model choice are
   shared code; never branch on which host is running anywhere else
 - `/fetch` has no allowlist. the model may call any API it wants
@@ -23,6 +23,9 @@ them to.
 - a 3B model follows the contract most of the time. where the gap is the difference
   between fast and slow, or working and broken, have the app guarantee it rather than
   asking again in the prompt -- regions and their ids belong to the app
+- the frontend is typescript in `frontend/src/`. `npm run build` compiles it to
+  `frontend/*.js`, which is committed so the directory stays servable as-is -- never edit
+  those by hand, and rebuild before committing. `npm run check` type checks and lints
 - `uv run pytest` is fast and deterministic (stubbed model, no GPU, no network). the
   browser tests observe from outside -- calls to the model endpoint, the iframe's HTML --
   and must stay that way; reading the app's variables makes a green suite mean nothing

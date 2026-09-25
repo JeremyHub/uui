@@ -10,7 +10,7 @@ What is left is what a browser genuinely cannot do for itself:
 
   POST /chat   stream from Ollama, which does not allow this origin by default, or from
                Claude through the Claude Code CLI (see claude_code.py). The engine in
-               frontend/engine.js is the same one that runs in the tab; this is only
+               frontend/src/engine.ts is the same one that runs in the tab; this is only
                somewhere else for it to run
   GET  /models what Ollama has pulled, and the Claude models on offer
   GET  /fetch  call an external API on the page's behalf, past CORS

@@ -17,35 +17,34 @@
 // This reaches into WebLLM's pipeline, so the version is pinned in WEBLLM_URL: a
 // different release may rename what is wrapped here. If the names are not found it does
 // nothing, which is the behaviour before it existed.
-
 export const WEBLLM_URL = "https://esm.run/@mlc-ai/web-llm@0.2.85";
-
 const wrapped = new WeakSet();
-
 function syncEachChunk(pipeline, chunkTokens) {
-  if (!pipeline || wrapped.has(pipeline)) return;
-  if (typeof pipeline.embedAndForward !== "function" || typeof pipeline.device?.sync !== "function") {
-    console.warn("uui: WebLLM internals changed; long prompts may trip the GPU watchdog");
-    return;
-  }
-  wrapped.add(pipeline);
-  // Read from the compiled model rather than the chat config, so the prefill_chunk_size
-  // chat option does nothing. The KV cache was sized for the compiled value; a smaller
-  // chunk fits inside it.
-  if (chunkTokens > 0) pipeline.prefillChunkSize = Math.min(pipeline.prefillChunkSize, chunkTokens);
-  const forward = pipeline.embedAndForward.bind(pipeline);
-  // Only prompt chunks. A decoded token is one position, far inside the limit, and its
-  // result is read back straight away regardless.
-  pipeline.embedAndForward = async (inputs, length, ...rest) => {
-    const result = await forward(inputs, length, ...rest);
-    if (length > 1) await pipeline.device.sync();
-    return result;
-  };
+    if (!pipeline || wrapped.has(pipeline))
+        return;
+    if (typeof pipeline.embedAndForward !== "function" || typeof pipeline.device?.sync !== "function") {
+        console.warn("uui: WebLLM internals changed; long prompts may trip the GPU watchdog");
+        return;
+    }
+    wrapped.add(pipeline);
+    // Read from the compiled model rather than the chat config, so the prefill_chunk_size
+    // chat option does nothing. The KV cache was sized for the compiled value; a smaller
+    // chunk fits inside it.
+    if (chunkTokens > 0)
+        pipeline.prefillChunkSize = Math.min(pipeline.prefillChunkSize, chunkTokens);
+    const forward = pipeline.embedAndForward.bind(pipeline);
+    // Only prompt chunks. A decoded token is one position, far inside the limit, and its
+    // result is read back straight away regardless.
+    pipeline.embedAndForward = async (inputs, length, ...rest) => {
+        const result = await forward(inputs, length, ...rest);
+        if (length > 1)
+            await pipeline.device.sync();
+        return result;
+    };
 }
-
 /** Patch every model this engine has loaded. Call after each load. */
 export function keepGpuJobsShort(engine, chunkTokens) {
-  for (const pipeline of engine?.loadedModelIdToPipeline?.values?.() ?? []) {
-    syncEachChunk(pipeline, chunkTokens);
-  }
+    for (const pipeline of engine?.loadedModelIdToPipeline?.values?.() ?? []) {
+        syncEachChunk(pipeline, chunkTokens);
+    }
 }
