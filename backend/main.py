@@ -41,6 +41,19 @@ FETCH_MAX_BYTES = 64 * 1024
 app = FastAPI()
 
 
+@app.middleware("http")
+async def revalidate(request: Request, call_next):
+    """Have the browser check for a newer copy of the app on every load.
+
+    With no Cache-Control, a browser decides for itself how long a file stays fresh --
+    a tenth of the time since it last changed -- so a refresh after an edit could keep
+    running the old modules for many minutes. An unchanged file still costs only a 304.
+    """
+    response = await call_next(request)
+    response.headers.setdefault("Cache-Control", "no-cache")
+    return response
+
+
 @app.get("/")
 async def index():
     return FileResponse(FRONTEND_DIR / "index.html")
