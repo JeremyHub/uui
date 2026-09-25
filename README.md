@@ -4,7 +4,7 @@ An app that generates itself as you use it. Ask it to create a UI for you for a 
 existing app and interact with the application it created. Each page is generated on the fly
 by the model.
 
-Heavily inspired by [Steve Sanderson's Vibe OS](https://www.youtube.com/watch?v=zh6fMtL_cSM)
+Heavily inspired by [Steve Sanderson's Vibe OS.](https://www.youtube.com/watch?v=zh6fMtL_cSM)
 
 > **Just for fun.** UUI is a toy and an experiment, not a serious product. Every page,
 > fact, price and web address in it is made up on the spot by a language model, and it
