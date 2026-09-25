@@ -15,7 +15,6 @@ import { createEngine, pickModel, serverHost, tabHost, webGPUCapability } from "
 const appEl = document.getElementById("app");
 const statusEl = document.getElementById("status");
 const transcriptEl = document.getElementById("transcript");
-const bootstrapEl = document.getElementById("bootstrap");
 const speculateEl = document.getElementById("speculate");
 const hostEl = document.getElementById("engine");
 const modelEl = document.getElementById("model");
@@ -576,8 +575,9 @@ async function sendAction(action) {
 // The first turn is the only one that writes a whole screen. It is streamed into the
 // iframe's parser rather than assigned at the end, so the page fills in as it is written.
 async function startFromConcept() {
+  if (busy) return;
   concept = document.getElementById("concept").value.trim() || "something interesting";
-  bootstrapEl.style.display = "none";
+  enterSession();
   busy = true;
 
   loading.show("Getting ready");
@@ -589,7 +589,7 @@ async function startFromConcept() {
   } catch (e) {
     loading.hide();
     setStatus(`could not start: ${e.message}`);
-    bootstrapEl.style.display = "";
+    leaveSession();
     busy = false;
     return;
   }
@@ -780,6 +780,55 @@ document.getElementById("concept").addEventListener("keydown", (e) => {
   if (e.key === "Enter") startFromConcept();
 });
 document.getElementById("reset-btn").addEventListener("click", () => location.reload());
+
+// --- home, session and about ------------------------------------------------
+//
+// Before a session the page is the home screen: the prompt, and the choice of model
+// under it. During one it is the generated page, and the same controls sit in the top
+// bar -- moved, not copied, so there is still one of each and their listeners come along.
+
+const optionsEl = document.getElementById("options");
+const optionsHome = optionsEl.parentElement;
+const optionsNext = optionsEl.nextElementSibling;
+
+function enterSession() {
+  document.body.classList.remove("at-home");
+  document.getElementById("controls-slot").append(optionsEl);
+}
+
+function leaveSession() {
+  document.body.classList.add("at-home");
+  optionsHome.insertBefore(optionsEl, optionsNext);
+}
+
+document.getElementById("home-btn").addEventListener("click", () => {
+  if (document.body.classList.contains("at-home")) document.getElementById("concept").focus();
+  else location.reload();
+});
+
+document.getElementById("examples").addEventListener("click", (e) => {
+  const chip = e.target.closest("[data-concept]");
+  if (!chip) return;
+  document.getElementById("concept").value = chip.dataset.concept;
+  startFromConcept();
+});
+
+// The about page is a panel over whatever is showing, so opening it mid-session loses
+// nothing. #about in the address makes it linkable.
+const aboutEl = document.getElementById("about");
+function showAbout(open) {
+  aboutEl.hidden = !open;
+  if (open !== (location.hash === "#about")) {
+    history.replaceState(null, "", open ? "#about" : location.pathname + location.search);
+  }
+}
+document.getElementById("about-btn").addEventListener("click", () => showAbout(true));
+document.getElementById("about-close").addEventListener("click", () => showAbout(false));
+aboutEl.addEventListener("click", (e) => { if (e.target === aboutEl) showAbout(false); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !aboutEl.hidden) showAbout(false); });
+window.addEventListener("hashchange", () => showAbout(location.hash === "#about"));
+showAbout(location.hash === "#about");
+if (aboutEl.hidden) document.getElementById("concept").focus();
 
 const engineChosen = setupEngineChoice();
 renderTranscript();

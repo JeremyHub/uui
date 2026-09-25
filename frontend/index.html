@@ -3,44 +3,117 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
 <title>UUI</title>
 <link rel="stylesheet" href="app.css">
 </head>
-<body>
+<body class="at-home">
 
-<div id="topbar">
-  <h3>UUI</h3>
-  <select id="engine" title="Where the model runs"></select>
-  <select id="model" title="Which model"></select>
+<header id="topbar">
+  <button class="brand" id="home-btn" title="Start over">
+    <span class="mark" aria-hidden="true"></span>UUI
+  </button>
   <span class="spacer"></span>
-  <label><input type="checkbox" id="speculate"> predict next click</label>
-  <button id="reset-btn">reset</button>
-</div>
+  <div id="controls-slot"></div>
+  <button id="reset-btn" class="ghost session-only" title="Start over with something new">new</button>
+  <button id="about-btn" class="ghost">about</button>
+</header>
 
-<div id="notice" role="status" hidden></div>
+<main id="home">
+  <div class="glow" aria-hidden="true"></div>
+  <section class="hero">
+    <p class="eyebrow">an interface that writes itself</p>
+    <h1>Describe it.<br><span class="grad">Then use it.</span></h1>
+    <p class="lede">Ask for any app and the model builds it as you click, one screen at a time.</p>
 
-<div id="bootstrap">
-  <input id="concept" placeholder="What would you like to see? e.g. 'a blog about cats'">
-  <button id="start-btn">Show me</button>
-</div>
+    <div id="bootstrap">
+      <input id="concept" autocomplete="off" spellcheck="false"
+        placeholder="What would you like to see? e.g. 'a blog about cats'">
+      <button id="start-btn">Create <span aria-hidden="true">→</span></button>
+    </div>
 
-<div id="status"></div>
+    <div class="chips" id="examples">
+      <button data-concept="a recipe browser with category tabs and a search box">recipe browser</button>
+      <button data-concept="a weather dashboard for any city">weather dashboard</button>
+      <button data-concept="a retro text adventure game">text adventure</button>
+      <button data-concept="a kanban board for planning a trip">trip planner</button>
+    </div>
+
+    <div id="options">
+      <label class="field"><span>runs on</span>
+        <select id="engine" title="Where the model runs"></select></label>
+      <label class="field"><span>model</span>
+        <select id="model" title="Which model"></select></label>
+      <label class="toggle" title="Guess the next click ahead of time so it applies instantly">
+        <input type="checkbox" id="speculate"><span class="switch" aria-hidden="true"></span>
+        predict next click</label>
+    </div>
+
+    <div id="notice" role="status" hidden></div>
+  </section>
+</main>
 
 <div id="stage">
   <iframe id="app" src="about:blank" sandbox="allow-scripts allow-same-origin allow-forms"></iframe>
   <div id="loading" hidden>
     <div class="card">
-      <h2 id="loading-title">Working</h2>
-      <p id="loading-detail"></p>
-      <div class="bar indeterminate" id="loading-bar"><span></span></div>
+      <div class="orb" aria-hidden="true"></div>
+      <div class="copy">
+        <h2 id="loading-title">Working</h2>
+        <p id="loading-detail"></p>
+        <div class="bar indeterminate" id="loading-bar"><span></span></div>
+      </div>
     </div>
   </div>
 </div>
 
-<details>
-  <summary>transcript (debug)</summary>
-  <div id="transcript"></div>
-</details>
+<footer id="bottombar">
+  <div id="status"></div>
+  <span class="spacer"></span>
+  <details>
+    <summary>transcript</summary>
+    <div id="transcript"></div>
+  </details>
+</footer>
+
+<section id="about" hidden aria-labelledby="about-title">
+  <div class="about-inner">
+    <button class="ghost close" id="about-close" title="Close">✕</button>
+    <p class="eyebrow">about</p>
+    <h1 id="about-title"><span class="grad">UUI</span></h1>
+    <p class="lede">An app that generates itself as you use it. Describe an app, new or
+      existing, and use the one the model makes for you. Every screen is written on the fly.</p>
+
+    <ol class="steps">
+      <li><strong>Describe an app.</strong> The model writes the first screen, which streams
+        into the page as it is generated.</li>
+      <li><strong>Click around.</strong> Each click sends the model what is on screen and
+        what has happened so far in the session.</li>
+      <li><strong>The page reacts.</strong> The model rewrites the parts of the page that
+        need to change.</li>
+    </ol>
+
+    <ul class="facts">
+      <li><strong>Simple interactions stay local.</strong> Tabs, toggles and sorting run in
+        the page and never wait on the model.</li>
+      <li><strong>It can use real data.</strong> The model can fetch an API before it
+        answers, so a weather page shows the actual weather.</li>
+      <li><strong>It remembers the session.</strong> Earlier choices are kept in a short
+        summary, so the app stays consistent.</li>
+      <li><strong>It runs anywhere.</strong> Through Ollama on your machine, in this tab
+        over WebGPU with no server, or on your Claude subscription.</li>
+    </ul>
+
+    <p class="links">
+      <a class="primary" href="https://github.com/JeremyHub/uui#readme" target="_blank"
+        rel="noopener">Read the README →</a>
+      <a href="https://github.com/JeremyHub/uui" target="_blank" rel="noopener">Source on GitHub</a>
+    </p>
+    <p class="credit">Heavily inspired by
+      <a href="https://www.youtube.com/watch?v=zh6fMtL_cSM" target="_blank" rel="noopener">Steve
+      Sanderson's Vibe OS</a>.</p>
+  </div>
+</section>
 
 <script type="module" src="main.js"></script>
 </body>
