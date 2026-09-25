@@ -161,6 +161,12 @@ function currentHost() {
 // which is false and reads as final, so a start waits on whichever listing is current.
 let modelsReady = Promise.resolve();
 
+// Set when neither host can run anything. Served statically with no WebGPU adapter --
+// Chrome on Linux ships with WebGPU off -- the only host left is a server that is not
+// there, and "no models available" reads as the app being broken rather than as a
+// browser setting.
+let unavailable = "";
+
 function populateModels(known = null) {
   modelsReady = fillModels(known);
   return modelsReady;
@@ -178,7 +184,8 @@ async function fillModels(known) {
     console.warn("could not list models", e);
   }
   if (!models.length) {
-    modelEl.replaceChildren(option("", "no models available"));
+    modelEl.replaceChildren(option("", unavailable ? "WebGPU unavailable" : "no models available"));
+    modelEl.title = unavailable || "Which model";
     modelEl.dataset.auto = "";
     modelEl.disabled = false;
     return;
@@ -203,6 +210,7 @@ async function fillModels(known) {
 
 function buildEngine() {
   const modelId = modelEl.value === "auto" ? modelEl.dataset.auto : modelEl.value;
+  if (!modelId && unavailable) throw new Error(unavailable);
   if (!modelId) throw new Error(`no model is available ${currentHost().label.toLowerCase()}`);
   return createEngine(currentHost(), modelId);
 }
@@ -238,7 +246,12 @@ async function setupEngineChoice() {
     hosts.set(tab.id, tab);
   }
   // Nothing can run here. Offer the server anyway, so the failure says what to start.
-  if (!hosts.size) hosts.set(server.id, server);
+  if (!hosts.size) {
+    hosts.set(server.id, server);
+    unavailable = `${gpu.why} Models run in the tab over WebGPU: enable it ` +
+      "(Chrome on Linux: chrome://flags/#enable-unsafe-webgpu and #enable-vulkan), " +
+      "or run the uui server.";
+  }
 
   hostEl.replaceChildren(...[...hosts.values()].map((h) => option(h.id, h.label)));
   hostEl.title = gpu.ok ? "Where the model runs" : `Where the model runs. ${gpu.why}`;
