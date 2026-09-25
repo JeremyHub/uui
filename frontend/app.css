@@ -133,6 +133,8 @@ body:not(.at-home) #home { display: none; }
 .hero { position: relative; width: min(680px, 100%); text-align: center; margin: auto 0; }
 .eyebrow { margin: 0 0 14px; font-size: 12px; font-weight: 600; letter-spacing: .18em;
   text-transform: uppercase; color: var(--muted); }
+.hero .title { margin: 0 0 18px; font-size: clamp(72px, 16vw, 144px); line-height: .95;
+  letter-spacing: -.05em; font-weight: 800; }
 .grad { background: var(--grad); -webkit-background-clip: text; background-clip: text;
   color: transparent; }
 .lede { margin: 0 auto 32px; max-width: 640px; font-size: 16px; line-height: 1.55;
