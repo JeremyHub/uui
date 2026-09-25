@@ -80,9 +80,11 @@ this will ever generate.
   these in the page's own `<script>` and marks the control `data-local`. Those clicks cost
   nothing. Models over-apply the attribute, so it is a hint: if a `data-local` click
   changes nothing within 400ms the turn is taken after all, and the click is never dead.
-- **Clicks that were already guessed.** Hovering a control starts generating its patch
-  immediately; idle time after a turn works through the rest. A hit applies in ~0ms. Any
-  real interaction aborts the in-flight guess, freeing the GPU at once.
+- **Clicks that were already guessed** (off by default; tick "predict next click").
+  Hovering a control starts generating its patch immediately; idle time after a turn
+  works through the rest. A hit applies in ~0ms. Any real interaction aborts the
+  in-flight guess, freeing the GPU at once. It is off by default because every guess is
+  a model call, made whether or not the click ever comes.
 
 ### What the app guarantees rather than asks for
 
@@ -145,8 +147,8 @@ If the `claude` CLI is on the server's PATH and logged in, the model menu also o
 app's prompt in place of Claude Code's own, with no tools, no saved session, no thinking
 and none of your settings, hooks or MCP servers. `/chat` translates what it streams into
 Ollama's format, so the engine is unchanged. It uses your Claude Code subscription and
-counts against its usage limits, so choosing a Claude model turns off next-click
-guessing until you turn it back on.
+counts against its usage limits, so choosing a Claude model turns next-click guessing
+off, even if you had turned it on.
 
 `UUI_CLAUDE_MODELS` changes which models are offered, and `UUI_CLAUDE_BIN=` (empty)
 turns this off.
