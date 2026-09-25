@@ -980,6 +980,34 @@ async def test_the_model_names_the_address_and_moves_it(fake, page):
 
 
 @pytest.mark.asyncio
+async def test_typing_a_site_in_the_address_bar_starts_a_new_session_there(fake, page):
+    scripted(fake, address="https://recipes.test/")
+    watcher = Watcher(page)
+    await start_app(page, watcher)
+    await watcher.turns_taken(lambda: click_text(page, "Open Results"))
+    named_before = sum("web address for an app" in p for p in prompts_sent(fake))
+
+    async def go():
+        await page.click("#addressbar")
+        await page.keyboard.type("hats.example")
+        await page.keyboard.press("Enter")
+    await watcher.turns_taken(go)
+
+    first_screen = [p for p in prompts_sent(fake) if "body of a live single-page app" in p][-1]
+    assert "APP CONCEPT:\nhats.example" in first_screen, "what was typed is not the new prompt"
+    assert "https://hats.example/" in first_screen
+    assert sum("web address for an app" in p for p in prompts_sent(fake)) == named_before, (
+        "a typed address was sent off to be named anyway"
+    )
+    assert await page.evaluate(ADDRESS_BAR) == "hats.example"
+    assert "original results" in await watcher.text(), "the old session's page was kept"
+
+    # Nothing from the old session reaches the new one.
+    await watcher.turns_taken(lambda: click_text(page, "Open Results"))
+    assert "Show the results" not in prompts_sent(fake)[-1], "the old session's memory leaked"
+
+
+@pytest.mark.asyncio
 async def test_the_address_bar_is_never_empty(fake, page):
     # A 3B model answers with something that is not an address some of the time.
     scripted(fake, address="Sure, here is one for you!")

@@ -59,11 +59,20 @@ a { color: var(--accent-2); }
   background: var(--grad); }
 
 #addressbar {
-  flex: 1 1 auto; min-width: 0; max-width: 760px; height: 32px; box-sizing: border-box;
-  display: flex; align-items: center; gap: 9px; padding: 0 14px; margin-left: 8px;
+  flex: 1 1 auto; min-width: 0; height: 32px; box-sizing: border-box;
+  display: flex; align-items: center; gap: 9px; padding: 0 14px; margin: 0 6px 0 8px;
   background: rgba(255, 255, 255, .05); border: 1px solid var(--line); border-radius: 999px;
+  cursor: text; transition: border-color .15s, background .15s, box-shadow .15s;
 }
+#addressbar:hover { border-color: var(--line-2); }
+#addressbar:focus-within { background: rgba(255, 255, 255, .07);
+  border-color: rgba(124, 92, 255, .6); box-shadow: 0 0 0 3px rgba(124, 92, 255, .18); }
 .at-home #addressbar { display: none; }
+/* The address bar takes the room the spacer holds on the home page. */
+body:not(.at-home) #topbar > .spacer { display: none; }
+#address:focus { outline: none; }
+#address-input { flex: 1; min-width: 0; padding: 0; font-size: 13px; background: none;
+  border: 0; outline: none; }
 #addressbar svg { flex: none; color: var(--dim); }
 #address { flex: 1; min-width: 0; font-size: 13px; color: var(--muted); white-space: nowrap;
   overflow: hidden; text-overflow: ellipsis; }
@@ -312,7 +321,7 @@ details summary:hover { color: var(--text); }
   #bootstrap { flex-direction: column; }
   #start-btn { padding: 13px; }
   #topbar { flex-wrap: wrap; }
-  #addressbar { order: 5; flex-basis: 100%; max-width: none; margin: 0; }
+  #addressbar { order: 5; flex-basis: 100%; margin: 0; }
   #topbar #options { order: 10; width: 100%; flex-wrap: wrap; }
   #topbar .field { flex: 1 1 40%; }
   #topbar select { max-width: none; width: 100%; }

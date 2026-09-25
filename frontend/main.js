@@ -34,13 +34,15 @@ const frameReady = new Promise((resolve) => {
   appEl.src = URL.createObjectURL(new Blob(["<!DOCTYPE html><title></title>"], { type: "text/html" }));
 });
 let concept = "";
-const journal = new Journal();     // what the session has established, compacted as it grows
+let journal = new Journal();       // what the session has established, compacted as it grows
 const log = [];                    // debug transcript
 let busy = false;
-const keyLog = new KeyLog();       // keys pressed in the page since the model last saw them
+let keyLog = new KeyLog();         // keys pressed in the page since the model last saw them
 // The update in flight, while there is one: { abort, rendering, done }. Until the model
 // starts writing, nothing on screen has changed, so a newer request can replace it.
 let turn = null;
+// The first screen while it is being written: { abort, done }. A new session stops it.
+let shellRun = null;
 let actionSeq = 0;
 let engine = null;
 
@@ -575,9 +577,22 @@ async function sendAction(action) {
 
 // The first turn is the only one that writes a whole screen. It is streamed into the
 // iframe's parser rather than assigned at the end, so the page fills in as it is written.
-async function startFromConcept() {
+async function startFromConcept(options = {}) {
   if (busy) return;
-  concept = document.getElementById("concept").value.trim() || "something interesting";
+  const abort = new AbortController();
+  const done = firstScreen(options, abort.signal);
+  shellRun = { abort, done };
+  try {
+    await done;
+  } finally {
+    if (shellRun?.done === done) shellRun = null;
+  }
+}
+
+// `prompt` and `address` come from the address bar: what was typed there, and the
+// address itself when what was typed is one. From the home page, neither.
+async function firstScreen({ prompt, address: typed } = {}, signal) {
+  concept = (prompt ?? document.getElementById("concept").value).trim() || "something interesting";
   enterSession();
   busy = true;
 
@@ -601,10 +616,14 @@ async function startFromConcept() {
 
   // The address first, so the first screen is the page it names. The bar is the app's,
   // so a reply with no address in it gets one made up rather than an empty bar.
-  try {
-    setAddress(await nameAddress({ engine, concept }));
-  } catch (e) {
-    console.warn("could not name the address", e);
+  if (typed) {
+    setAddress(typed);
+  } else {
+    try {
+      setAddress(await nameAddress({ engine, concept, signal }));
+    } catch (e) {
+      console.warn("could not name the address", e);
+    }
   }
   if (!address) setAddress(`https://${slugOf(concept)}.app/`);
 
@@ -625,7 +644,7 @@ async function startFromConcept() {
   doc.write(documentHead(concept));
   let written = 0;
   try {
-    for await (const event of runShell({ engine, concept, address })) {
+    for await (const event of runShell({ engine, concept, address, signal })) {
       if (event.type === "fetching") {
         loading.detail(`Fetching ${new URL(event.url).host}…`);
         loading.indeterminate();
@@ -638,7 +657,7 @@ async function startFromConcept() {
   } catch (e) {
     doc.write(errorRegion(e.message));
   }
-  if (!written) doc.write(errorRegion("Nothing came back. Try asking another way."));
+  if (!written && !signal.aborted) doc.write(errorRegion("Nothing came back. Try asking another way."));
   doc.write("</body></html>");
   doc.close();
 
@@ -655,7 +674,7 @@ async function startFromConcept() {
   log.push({ action: "start", concept, secs });
   renderTranscript();
   busy = false;
-  speculate(doc);
+  if (!signal.aborted) speculate(doc);
 }
 
 // --- input capture ----------------------------------------------------------
@@ -785,7 +804,7 @@ setInterval(() => {
   if (doc && doc.readyState !== "loading") attachDelegation(doc);
 }, 50);
 
-document.getElementById("start-btn").addEventListener("click", startFromConcept);
+document.getElementById("start-btn").addEventListener("click", () => startFromConcept());
 document.getElementById("concept").addEventListener("keydown", (e) => {
   if (e.key === "Enter") startFromConcept();
 });
@@ -793,8 +812,8 @@ document.getElementById("concept").addEventListener("keydown", (e) => {
 // --- the address bar -------------------------------------------------------------
 //
 // The generated app is a website, so it has an address, and the model picks it: a call
-// of its own names it before the first screen, and any turn can move it. It only shows
-// where the app is; it takes no typing.
+// of its own names it before the first screen, and any turn can move it. Typing in it
+// goes somewhere new -- a brand new session, with what was typed as the prompt.
 
 const addressEl = document.getElementById("address");
 let address = "";
@@ -816,6 +835,53 @@ function toAddress(text, base = address) {
     return null;
   }
 }
+
+const addressBar = document.getElementById("addressbar");
+const addressInput = document.getElementById("address-input");
+
+// Everything the old session knew goes, so the new one starts as the home page would
+// start it -- but the model stays loaded, which a page reload would throw away.
+async function startNewSession(prompt) {
+  cancelSpeculation();
+  predictions.clear();
+  if (turn) { turn.abort.abort(); await turn.done; }
+  if (shellRun) { shellRun.abort.abort(); await shellRun.done.catch(() => {}); }
+  journal = new Journal();
+  keyLog = new KeyLog();
+  log.length = 0;
+  address = "";
+  addressEl.replaceChildren();
+  // Typed an address: that is the address, and there is nothing to ask the model.
+  const typed = /^\S+\.\S+$/.test(prompt) ? toAddress(prompt, "") : null;
+  startFromConcept({ prompt, address: typed });
+}
+
+function editAddress() {
+  addressEl.hidden = true;
+  addressInput.hidden = false;
+  addressInput.value = addressEl.textContent;
+  addressInput.focus();
+  addressInput.select();
+}
+
+addressBar.addEventListener("mousedown", (e) => {
+  if (e.target === addressInput) return;
+  e.preventDefault();
+  editAddress();
+});
+addressEl.addEventListener("focus", editAddress);
+addressInput.addEventListener("blur", () => {
+  addressInput.hidden = true;
+  addressEl.hidden = false;
+});
+addressInput.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") addressInput.blur();
+  if (e.key !== "Enter") return;
+  const text = addressInput.value.trim();
+  if (!text) return;
+  addressInput.blur();
+  startNewSession(text);
+});
 
 function setAddress(text) {
   const href = toAddress(text);
