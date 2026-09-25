@@ -1,4 +1,4 @@
-// Incremental parser for the #plan / #region / #screen / #none / #end reply format.
+// Incremental parser for the #plan / #url / #region / #screen / #none / #end reply format.
 //
 // Emits events as soon as a marker line proves the previous block is finished, so a
 // region reaches the screen while the model is still writing the next one. Within a
@@ -126,6 +126,11 @@ export class PatchParser {
       const event = this.#flush();
       if (event) yield event;
       yield { type: "plan", text: stripped.slice(5).trim() };
+    } else if (stripped.startsWith("#url")) {
+      const event = this.#flush();
+      if (event) yield event;
+      const url = stripped.slice(4).trim();
+      if (url) yield { type: "url", url };
     } else if (stripped.startsWith("#region")) {
       const event = this.#flush();
       if (event) yield event;

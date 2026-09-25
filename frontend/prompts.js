@@ -26,6 +26,14 @@ ${apiCatalogue()}
 // the end of a prompt most, and appending a ten-line API catalogue there pushed "give
 // this screen the controls it needs" into the middle, where it stopped being followed:
 // pages came back as pretty, unclickable posters.
+// Its own call, before the first screen, so the screen can be the page it names. Asking
+// the first screen to open with its address instead cost whole screens: a 3B model would
+// write the address and stop.
+export const ADDRESS_SYSTEM_PROMPT = `You make up the web address for an app, given what the app is.
+
+Reply with ONE address and nothing else: a short, believable domain for this app and the
+path of its first page. No quotes, no commentary.`;
+
 export const SHELL_SYSTEM_PROMPT = `You build the body of a live single-page app.
 
 The page already has a stylesheet, written for exactly this job. Use it. Do not write
@@ -85,8 +93,8 @@ Interactivity:
 
 export const PATCH_SYSTEM_PROMPT = `You update a live single-page app by rewriting ONLY the parts that change.
 
-You are given the app concept, the markup of each region currently on screen, and the
-action the user just took. "keystrokes" lists every key they pressed since you were last
+You are given the app concept, the page's ADDRESS, the markup of each region currently on
+screen, and the action the user just took. "keystrokes" lists every key they pressed since you were last
 asked, in order, and which field it was pressed in (⌫ backspace, ⏎ enter, ⇥ tab). The page's stylesheet is the shared one you already know:
 .row .stack .grid .card .panel .media .btn .chip .tab .tabs .tag .field .list .muted
 .stat, plus plain HTML elements. Reuse those classes; do not invent CSS.
@@ -94,11 +102,15 @@ asked, in order, and which field it was pressed in (⌫ backspace, ⏎ enter, �
 Reply in exactly this format:
 
 #plan <one sentence: what the user wants, and which region should change>
+#url <the new address -- ONLY if the action takes the user to a different page>
 #region <region-id>
 <the complete new inner HTML of that region>
 #end
 
 Rules:
+- #url is optional. Include it when the user ends up somewhere new -- another page, an
+  item, a search with new terms -- keeping the same site and changing the path or query.
+  Leave it out when they stay where they are.
 - Change the FEWEST regions that satisfy the action -- almost always exactly one.
   A region you do not name keeps its current contents, which is what you want.
 - Change the region whose CONTENT the action affects, not the region the control

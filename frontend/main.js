@@ -9,7 +9,7 @@ import {
   keySymbol, openRegion, repairImages, runScripts, splitOversizedRegions, submitsOnEnter,
 } from "./dom.js";
 import { Journal } from "./journal.js";
-import { SHELL_MAX_TOKENS, runPatch, runShell } from "./turn.js";
+import { SHELL_MAX_TOKENS, nameAddress, runPatch, runShell } from "./turn.js";
 import { createEngine, pickModel, serverHost, tabHost, webGPUCapability } from "./engine.js";
 
 const appEl = document.getElementById("app");
@@ -394,7 +394,7 @@ async function generatePrediction(doc, el, myRun) {
   const events = [];
   try {
     for await (const event of runPatch({
-      engine, doc, concept, action, memory: journal.toPrompt(), signal: specAbort.signal,
+      engine, doc, concept, action, memory: journal.toPrompt(), address, signal: specAbort.signal,
     })) {
       if (myRun !== specRun) return false;
       events.push(event);
@@ -453,7 +453,8 @@ function predictOnHover(doc, el) {
 // --- turns ------------------------------------------------------------------
 
 function applyEvent(doc, event, touched) {
-  if (event.type === "region_open") openRegion(doc, event.id);
+  if (event.type === "url") setAddress(event.url);
+  else if (event.type === "region_open") openRegion(doc, event.id);
   else if (event.type === "region_chunk") appendToRegion(doc, event.id, event.html);
   else if (event.type === "region") { applyRegion(doc, event.id, event.html); touched?.push(event.id); }
   else if (event.type === "screen") { applyScreen(doc, event.html); touched?.push("(whole screen)"); }
@@ -531,7 +532,7 @@ async function sendAction(action) {
     // with it -- see engine.js.
     await ensureEngineReady();
     for await (const event of runPatch({
-      engine, doc, concept, action, memory: journal.toPrompt(), signal: current.abort.signal,
+      engine, doc, concept, action, memory: journal.toPrompt(), address, signal: current.abort.signal,
     })) {
       if (event.type === "plan") { plan = event.text; timerLabel = plan.slice(0, 80); loading.detail(plan); }
       else if (event.type === "phase" || event.type === "none") continue;
@@ -598,6 +599,15 @@ async function startFromConcept() {
   loading.show("Making it for you", { detail: concept });
   await baseCssReady;
 
+  // The address first, so the first screen is the page it names. The bar is the app's,
+  // so a reply with no address in it gets one made up rather than an empty bar.
+  try {
+    setAddress(await nameAddress({ engine, concept }));
+  } catch (e) {
+    console.warn("could not name the address", e);
+  }
+  if (!address) setAddress(`https://${slugOf(concept)}.app/`);
+
   const doc = appEl.contentDocument;
   // document.open() reuses the same document object but strips every listener on it, so
   // the "already delegated" guard has to be cleared or delegation silently never
@@ -615,7 +625,7 @@ async function startFromConcept() {
   doc.write(documentHead(concept));
   let written = 0;
   try {
-    for await (const event of runShell({ engine, concept })) {
+    for await (const event of runShell({ engine, concept, address })) {
       if (event.type === "fetching") {
         loading.detail(`Fetching ${new URL(event.url).host}…`);
         loading.indeterminate();
@@ -779,7 +789,47 @@ document.getElementById("start-btn").addEventListener("click", startFromConcept)
 document.getElementById("concept").addEventListener("keydown", (e) => {
   if (e.key === "Enter") startFromConcept();
 });
-document.getElementById("reset-btn").addEventListener("click", () => location.reload());
+
+// --- the address bar -------------------------------------------------------------
+//
+// The generated app is a website, so it has an address, and the model picks it: a call
+// of its own names it before the first screen, and any turn can move it. It only shows
+// where the app is; it takes no typing.
+
+const addressEl = document.getElementById("address");
+let address = "";
+
+function slugOf(text) {
+  return text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 32) || "app";
+}
+
+// What the model wrote, as an address -- or null. A path keeps the current site, and a
+// placeholder copied from the prompt ("https://<a short domain>") is not an address.
+function toAddress(text, base = address) {
+  const raw = text.trim();
+  if (!raw || /[<>\s]/.test(raw)) return null;
+  try {
+    if (/^[/?#]/.test(raw)) return base ? new URL(raw, base).href : null;
+    const url = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`);
+    return /^https?:$/.test(url.protocol) ? url.href : null;
+  } catch {
+    return null;
+  }
+}
+
+function setAddress(text) {
+  const href = toAddress(text);
+  if (!href) return;
+  address = href;
+  // The site in full, the rest of the path quieter -- the way a browser shows it.
+  const url = new URL(href);
+  const rest = (url.pathname === "/" ? "" : url.pathname) + url.search + url.hash;
+  const host = document.createElement("span");
+  host.className = "host";
+  host.textContent = url.host;
+  addressEl.replaceChildren(host, rest);
+  addressEl.title = href;
+}
 
 // --- home, session and about ------------------------------------------------
 //

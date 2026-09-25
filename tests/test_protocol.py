@@ -213,6 +213,42 @@ async def test_a_region_written_on_one_line_still_arrives_in_pieces(page):
 
 
 @pytest.mark.asyncio
+async def test_a_new_address_comes_out_ahead_of_the_region(page):
+    events = await parse(page, "#plan open it\n#url https://purrfect.blog/posts/tabby\n"
+                               "#region results\n<p>tabby</p>\n#end")
+    assert [e["url"] for e in events if e["type"] == "url"] == ["https://purrfect.blog/posts/tabby"]
+    assert [e["id"] for e in events if e["type"] == "region"] == ["results"], (
+        "the address line swallowed the region under it"
+    )
+
+
+async def name_address(page, reply):
+    return await run(page, """turn.nameAddress({
+        engine: { async *chat() { for (const c of arg.match(/[\\s\\S]{1,5}/g)) yield c; } },
+        concept: 'a cat blog',
+    })""", reply)
+
+
+@pytest.mark.asyncio
+async def test_the_address_is_picked_out_of_whatever_the_model_wraps_it_in(page):
+    assert await name_address(page, "https://purrfect.blog/posts") == "https://purrfect.blog/posts"
+    assert await name_address(page, "Sure! purrfect.blog/home.\nIt suits a cat blog.") == "purrfect.blog/home"
+    # Nothing shaped like an address: the app makes one up rather than show this.
+    assert await name_address(page, "#plan nothing\n#end") == ""
+
+
+@pytest.mark.asyncio
+async def test_the_first_screen_is_told_its_address(page):
+    user = await run(page, """(async () => {
+        let seen = '';
+        const engine = { async *chat({ user }) { seen = user; yield '<section data-region="a">hi</section>'; } };
+        for await (const e of turn.runShell({ engine, concept: 'x', address: 'https://purrfect.blog/' })) {}
+        return seen;
+    })()""")
+    assert "https://purrfect.blog/" in user
+
+
+@pytest.mark.asyncio
 async def test_a_final_region_survives_a_missing_end_marker(page):
     events = await parse(page, "#plan truncated\n#region results\n<p>content</p>")
     assert [e["id"] for e in events if e["type"] == "region"] == ["results"]
@@ -309,6 +345,7 @@ async def test_the_patch_prompt_carries_the_markup_the_model_has_to_match(page):
         doc.body.innerHTML = '<section data-region="grid"><div class="card"><h2>Siamese</h2></div></section>';
         return turn.buildPatchMessage({
           concept: 'a cat gallery', doc, memory: 'STORY SO FAR:\\nthe user likes cats',
+          address: 'https://purrfect.blog/breeds',
           action: { event: 'click', elementData: { text: 'Next' } },
         });
     })()""")
@@ -316,6 +353,7 @@ async def test_the_patch_prompt_carries_the_markup_the_model_has_to_match(page):
     assert "a cat gallery" in message
     assert "Next" in message
     assert "the user likes cats" in message, "the session's memory never reached the prompt"
+    assert "https://purrfect.blog/breeds" in message, "the model was not told where the user is"
 
 
 # --- keeping GPU jobs short ----------------------------------------------------

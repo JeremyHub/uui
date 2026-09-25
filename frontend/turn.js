@@ -3,7 +3,7 @@
 // straight into the parser, and every turn after it that rewrites only what changes.
 
 import { fetchForPrompt } from "./apis.js";
-import { PATCH_SYSTEM_PROMPT, SHELL_SYSTEM_PROMPT } from "./prompts.js";
+import { ADDRESS_SYSTEM_PROMPT, PATCH_SYSTEM_PROMPT, SHELL_SYSTEM_PROMPT } from "./prompts.js";
 import { PatchParser } from "./parser.js";
 import { regionsOf, renderScreen } from "./screen.js";
 
@@ -103,8 +103,9 @@ export function bodyContentStart(text) {
   return -1;
 }
 
-export function buildPatchMessage({ concept, doc, action, memory }) {
+export function buildPatchMessage({ concept, doc, action, memory, address }) {
   const parts = [`APP CONCEPT:\n${concept || "(unspecified)"}`];
+  if (address) parts.push(`ADDRESS:\n${address}`);
   // What the session has established so far. The screen shows the present; this is the
   // only reason a later turn can still know what the user said five screens ago.
   if (memory) parts.push(memory);
@@ -113,16 +114,51 @@ export function buildPatchMessage({ concept, doc, action, memory }) {
   return parts.join("\n\n");
 }
 
+export const ADDRESS_MAX_TOKENS = 32;
+const ADDRESS_RE = /(?:https?:\/\/)?[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:\/[^\s"'<>`]*)?/i;
+
+/**
+ * Ask the model for the app's web address: one line, a few tokens, before the first screen.
+ *
+ * Returns "" when the reply holds nothing shaped like an address, and the caller makes
+ * one up -- the bar belongs to the app, and is never left empty for a model's sake.
+ */
+export async function nameAddress({ engine, concept, signal }) {
+  const child = new AbortController();
+  const relay = () => child.abort();
+  if (signal?.aborted) return "";
+  signal?.addEventListener("abort", relay);
+  let text = "";
+  try {
+    for await (const piece of engine.chat({
+      system: ADDRESS_SYSTEM_PROMPT, user: `APP CONCEPT:\n${concept || "a simple demo app"}`,
+      maxTokens: ADDRESS_MAX_TOKENS, temperature: 0.7, signal: child.signal,
+    })) {
+      text += piece;
+      // One line is all it was asked for; anything after it is commentary.
+      if (text.trim() && text.trimStart().includes("\n")) { child.abort(); break; }
+    }
+  } catch (e) {
+    if (e.name !== "AbortError") throw e;
+  } finally {
+    signal?.removeEventListener("abort", relay);
+  }
+  const first = text.trim().split("\n")[0];
+  const match = ADDRESS_RE.exec(first);
+  return match ? match[0].replace(/[.,;:)]+$/, "") : "";
+}
+
 /**
  * Stream the body as it is generated, so the page fills in rather than appearing.
  *
  * The document around it -- doctype, head, stylesheet -- belongs to the app and is
  * already on screen before this is called, so the model writes content and nothing else.
  */
-export async function* runShell({ engine, concept, signal, getData = fetchForPrompt }) {
+export async function* runShell({ engine, concept, address, signal, getData = fetchForPrompt }) {
   yield { type: "phase", name: "building" };
 
   let user = `APP CONCEPT:\n${concept || "a simple demo app"}`;
+  if (address) user += `\n\nADDRESS:\n${address}`;
   const request = {};
   const ask = (u, req) => replyStream({
     engine, system: SHELL_SYSTEM_PROMPT, user: u,
@@ -221,9 +257,9 @@ async function* patchOnce({ engine, user, doc, action, signal, request = {} }) {
 }
 
 export async function* runPatch({
-  engine, doc, concept, action, memory, signal, getData = fetchForPrompt,
+  engine, doc, concept, action, memory, address, signal, getData = fetchForPrompt,
 }) {
-  let user = buildPatchMessage({ concept, doc, action, memory });
+  let user = buildPatchMessage({ concept, doc, action, memory, address });
   yield { type: "phase", name: "updating" };
 
   const produced = { any: false };

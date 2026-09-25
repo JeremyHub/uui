@@ -107,9 +107,11 @@ async def page(server):
         await browser.close()
 
 
-def scripted(fake, shell=SHELL, patch=PATCH):
+def scripted(fake, shell=SHELL, patch=PATCH, address="https://test-app.example/"):
     fake.rules.clear()
     fake.fail_with = None
+    if address:
+        fake.on("web address for an app", address)
     fake.on("body of a live single-page app", shell)
     fake.default = patch
 
@@ -955,6 +957,35 @@ async def test_data_that_could_not_be_had_is_reported_to_the_model_not_hidden(fa
 
     followup = await wait_for_prompt(fake, "unavailable")
     assert "Only http and https URLs can be fetched" in followup
+
+
+# --- the address bar ----------------------------------------------------------
+
+ADDRESS_BAR = "document.getElementById('address').innerText"
+
+
+@pytest.mark.asyncio
+async def test_the_model_names_the_address_and_moves_it(fake, page):
+    scripted(fake, address="https://recipes.test/",
+             patch="#plan open results\n#url /results?page=1\n#region results\n<p>patched results</p>\n#end")
+    watcher = Watcher(page)
+    await start_app(page, watcher)
+    assert await page.evaluate(ADDRESS_BAR) == "recipes.test"
+    shell_prompt = [p for p in prompts_sent(fake) if "body of a live single-page app" in p][-1]
+    assert "https://recipes.test/" in shell_prompt, "the first screen was not told its address"
+
+    await watcher.turns_taken(lambda: click_text(page, "Open Results"))
+    assert await page.evaluate(ADDRESS_BAR) == "recipes.test/results?page=1"
+    assert "patched results" in await watcher.text()
+
+
+@pytest.mark.asyncio
+async def test_the_address_bar_is_never_empty(fake, page):
+    # A 3B model answers with something that is not an address some of the time.
+    scripted(fake, address="Sure, here is one for you!")
+    watcher = Watcher(page)
+    await start_app(page, watcher, concept="Cat Blog")
+    assert await page.evaluate(ADDRESS_BAR) == "cat-blog.app"
 
 
 # --- the failure that destroys work ----------------------------------------
