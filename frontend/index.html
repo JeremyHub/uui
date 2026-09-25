@@ -16,7 +16,7 @@
   <span class="spacer"></span>
   <div id="controls-slot"></div>
   <button id="reset-btn" class="ghost session-only" title="Start over with something new">new</button>
-  <button id="about-btn" class="ghost">about</button>
+  <button id="about-btn" class="pill" data-about><span class="info" aria-hidden="true">i</span>About</button>
 </header>
 
 <main id="home">
@@ -32,12 +32,7 @@
       <button id="start-btn">Create <span aria-hidden="true">→</span></button>
     </div>
 
-    <div class="chips" id="examples">
-      <button data-concept="a recipe browser with category tabs and a search box">recipe browser</button>
-      <button data-concept="a weather dashboard for any city">weather dashboard</button>
-      <button data-concept="a retro text adventure game">text adventure</button>
-      <button data-concept="a kanban board for planning a trip">trip planner</button>
-    </div>
+    <button class="about-link" data-about>New here? <strong>See how UUI works →</strong></button>
 
     <div id="options">
       <label class="field"><span>runs on</span>

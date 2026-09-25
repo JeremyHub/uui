@@ -806,13 +806,6 @@ document.getElementById("home-btn").addEventListener("click", () => {
   else location.reload();
 });
 
-document.getElementById("examples").addEventListener("click", (e) => {
-  const chip = e.target.closest("[data-concept]");
-  if (!chip) return;
-  document.getElementById("concept").value = chip.dataset.concept;
-  startFromConcept();
-});
-
 // The about page is a panel over whatever is showing, so opening it mid-session loses
 // nothing. #about in the address makes it linkable.
 const aboutEl = document.getElementById("about");
@@ -822,7 +815,9 @@ function showAbout(open) {
     history.replaceState(null, "", open ? "#about" : location.pathname + location.search);
   }
 }
-document.getElementById("about-btn").addEventListener("click", () => showAbout(true));
+for (const el of document.querySelectorAll("[data-about]")) {
+  el.addEventListener("click", () => showAbout(true));
+}
 document.getElementById("about-close").addEventListener("click", () => showAbout(false));
 aboutEl.addEventListener("click", (e) => { if (e.target === aboutEl) showAbout(false); });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !aboutEl.hidden) showAbout(false); });

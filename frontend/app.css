@@ -47,6 +47,16 @@ a { color: var(--accent-2); }
 }
 .ghost:hover { color: var(--text); border-color: var(--line-2); background: rgba(255,255,255,.04); }
 .at-home .session-only { display: none; }
+.pill {
+  display: flex; align-items: center; gap: 7px; padding: 6px 14px 6px 8px; cursor: pointer;
+  font-size: 13px; font-weight: 600; color: var(--text);
+  background: rgba(124, 92, 255, .14); border: 1px solid rgba(124, 92, 255, .45);
+  border-radius: 999px; transition: background .15s, border-color .15s;
+}
+.pill:hover { background: rgba(124, 92, 255, .26); border-color: rgba(124, 92, 255, .7); }
+.info { width: 18px; height: 18px; display: grid; place-items: center; border-radius: 50%;
+  font: 700 11px/1 ui-serif, Georgia, serif; font-style: italic; color: #fff;
+  background: var(--grad); }
 
 /* The option controls live on the home page before a session and in the top bar during
  * one -- the same elements, moved, so every listener on them keeps working. */
@@ -107,7 +117,7 @@ body:not(.at-home) #home { display: none; }
   letter-spacing: -.035em; font-weight: 800; }
 .grad { background: var(--grad); -webkit-background-clip: text; background-clip: text;
   color: transparent; }
-.lede { margin: 0 auto 32px; max-width: 480px; font-size: 16px; line-height: 1.55;
+.lede { margin: 0 auto 32px; max-width: 640px; font-size: 16px; line-height: 1.55;
   color: var(--muted); }
 
 #bootstrap {
@@ -133,13 +143,14 @@ body:not(.at-home) #home { display: none; }
 #start-btn span { display: inline-block; transition: transform .2s; }
 #start-btn:hover span { transform: translateX(3px); }
 
-.chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin: 18px 0 0; }
-.chips button {
-  font-size: 13px; padding: 6px 12px; cursor: pointer; color: var(--muted);
-  background: rgba(255, 255, 255, .03); border: 1px solid var(--line); border-radius: 999px;
+.about-link {
+  display: inline-block; margin: 22px 0 0; padding: 8px 16px; cursor: pointer;
+  font-size: 14px; color: var(--muted); background: rgba(255, 255, 255, .03);
+  border: 1px solid var(--line); border-radius: 999px;
   transition: color .15s, border-color .15s, background .15s;
 }
-.chips button:hover { color: var(--text); border-color: rgba(124, 92, 255, .5);
+.about-link strong { color: var(--text); font-weight: 600; margin-left: 4px; }
+.about-link:hover { color: var(--text); border-color: rgba(124, 92, 255, .5);
   background: rgba(124, 92, 255, .1); }
 
 #options {
