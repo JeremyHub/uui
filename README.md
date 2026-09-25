@@ -1,16 +1,16 @@
 # UUI
 
 An app that generates itself as you use it. Ask it to create a UI for you for a new or
-existing app and interact with the application it created. Each page I is generated on the fly
+existing app and interact with the application it created. Each page is generated on the fly
 by the model.
 
 Heavily inspired by [Steve Sanderson's Vibe OS](https://www.youtube.com/watch?v=zh6fMtL_cSM)
 
 ## How it works
 
-1. **You describe an app.** The model writes the first screen, which streams into the page
+1. **Describe an app.** The model writes the first screen, which streams into the page
    as it is generated.
-2. **You click around.** Each click sends the model what is on screen and what happened so
+2. **Click around.** Each click sends the model what is on screen and what happened so
    far in the session.
 3. **The page reacts.** The model rewrites the page to react to your input.
 
@@ -32,12 +32,6 @@ With Ollama:
 ```
 ollama pull qwen2.5-coder:3b                 # only needed once
 uv run uvicorn backend.main:app --reload     # then open http://localhost:8000/
-```
-
-With a different Ollama model:
-
-```
-OLLAMA_MODEL=llama3.2:3b uv run uvicorn backend.main:app --reload
 ```
 
 With Claude: if the `claude` CLI is on your PATH and logged in, the model menu also offers
